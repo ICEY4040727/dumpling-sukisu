@@ -99,6 +99,46 @@ integrate_sukisu() {
     || sed -i '/^endmenu/i\source "drivers/kernelsu/Kconfig"' "$KDIR/drivers/Kconfig"
 }
 
+apply_compat_patches() {
+  log "Applying 4.4 compatibility shims to SukiSU sources"
+  local ksu="$KDIR/KernelSU/kernel"
+  [ -d "$ksu" ] || die "SukiSU kernel dir missing: $ksu"
+
+  # MODULE_IMPORT_NS() arrived in 5.4 with module symbol namespaces. Every
+  # SukiSU branch (main / old / builtin) calls it unconditionally; the only
+  # guard is 6.13, for the string-literal vs bare-identifier form. On 4.4 the
+  # macro does not exist, so clang reads it as an implicit function declaration
+  # and fails with -Werror,-Wimplicit-int. 4.4 has no namespaces to import, so
+  # neutralising the call is a semantic no-op. The surrounding #if/#else/#endif
+  # is left intact: empty preprocessor branches are harmless.
+  python3 - "$ksu" <<'PY'
+import os, sys
+root = sys.argv[1]
+n = 0
+for dirpath, _, files in os.walk(root):
+    for fn in files:
+        if not fn.endswith(".c"):
+            continue
+        p = os.path.join(dirpath, fn)
+        lines = open(p, encoding="utf-8", errors="replace").readlines()
+        out, hit = [], False
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("MODULE_IMPORT_NS(") and not stripped.startswith("/*"):
+                out.append(line[: len(line) - len(stripped)]
+                           + "/* 4.4: no module symbol namespaces; call omitted */\n")
+                hit, n = True, n + 1
+            else:
+                out.append(line)
+        if hit:
+            with open(p, "w", encoding="utf-8", newline="") as f:
+                f.writelines(out)
+print("  MODULE_IMPORT_NS calls neutralised: %d" % n)
+PY
+  echo "  Only the first known incompatibility is handled here. Further"
+  echo "  compile errors are expected; fix them one round at a time."
+}
+
 configure_defconfig() {
   log "Writing required CONFIG entries to $DEFCONFIG"
   python3 - "$KDIR/arch/arm64/configs/$DEFCONFIG" <<'PY'
@@ -231,11 +271,11 @@ pack_ak3() {
 }
 
 case "$STAGE" in
-  prepare) download_all; integrate_sukisu; configure_defconfig; selfcheck ;;
+  prepare) download_all; integrate_sukisu; apply_compat_patches; configure_defconfig; selfcheck ;;
   hooks)   [ -d "$KDIR" ] || die "run ./build.sh prepare first"; show_hooks ;;
   build)   [ -f "$KDIR/arch/arm64/configs/$DEFCONFIG" ] || die "run ./build.sh prepare first"; selfcheck; compile_kernel ;;
   pack)    pack_ak3 ;;
-  all)     download_all; integrate_sukisu; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
+  all)     download_all; integrate_sukisu; apply_compat_patches; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
   clean)   rm -rf "$WORK"; echo "removed $WORK" ;;
   *)       die "unknown stage '$STAGE' (use prepare|hooks|build|pack|all|clean)" ;;
 esac

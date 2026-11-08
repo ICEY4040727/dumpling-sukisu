@@ -4,13 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       sukisu_ref:
-        description: SukiSU-Ultra branch
+        description: SukiSU-Ultra branch (main is proven broken on 4.4)
         required: true
-        default: main
+        default: old
         type: choice
         options:
-          - main
+          - old
+          - builtin-new
           - builtin
+          - main
 
 jobs:
   build:
@@ -18,6 +20,23 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
+      # Only the immutable downloads are cached. The kernel tree and KernelSU
+      # checkout are rebuilt every run so a branch switch cannot reuse the
+      # wrong source tree. Save happens right after prepare, because a failed
+      # compile would otherwise skip the cache post-step entirely.
+      - name: Restore source and toolchain cache
+        id: src-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            work/*.zip
+            work/*.tar.gz
+            work/clang-r547379
+            work/android_prebuilts_*
+          key: dumpling-src-${{ hashFiles('toolchain.conf') }}
+          restore-keys: |
+            dumpling-src-
 
       - name: System dependencies
         run: |
@@ -35,10 +54,47 @@ jobs:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
         run: bash ./build.sh prepare
 
+      # Save immediately after prepare. A failed compile skips the cache
+      # post-step, which would otherwise re-download ~19 minutes of toolchains
+      # on every retry.
+      - name: Save source and toolchain cache
+        if: success() && steps.src-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            work/*.zip
+            work/*.tar.gz
+            work/clang-r547379
+            work/android_prebuilts_*
+          key: dumpling-src-${{ hashFiles('toolchain.conf') }}
+
       - name: Compile kernel
         env:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
-        run: bash ./build.sh build
+        run: |
+          set -o pipefail
+          bash ./build.sh build 2>&1 | tee build.log
+
+      - name: Keep compile log on failure
+        if: failure()
+        run: |
+          if [ -f build.log ]; then
+            {
+              echo '## Compile kernel - last 100 lines'
+              echo '```'
+              tail -n 100 build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload compile log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-log-${{ inputs.sukisu_ref }}-run${{ github.run_number }}
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Pack AnyKernel3 zip
         run: bash ./build.sh pack
