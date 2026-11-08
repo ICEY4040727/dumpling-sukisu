@@ -98,6 +98,24 @@ git commit -m "init: dumpling sukisu build"
 git push -u origin main
 ```
 
+`git push -u origin main` 逐字拆开：`push` 把本地提交送到远程；`origin` 是
+remote 别名，git 查 `.git/config` 的 `[remote "origin"]` 拿到 URL；`main` 是
+refspec，完整写法 `main:main`（本地 main → 远程同名分支），只写一个 `main`
+时目标同名；`-u` 是 `--set-upstream`，额外往 config 记一笔：
+
+```ini
+[branch "main"]
+    remote = origin
+    merge = refs/heads/main
+```
+
+这笔记录把「本地 main 对应 origin/main」固定下来，以后 `git push` / `git pull`
+不用再带参数。第一次 push 时 git 会打印
+`branch 'main' set up to track 'origin/main'.`，`git status -sb` 显示
+`## main...origin/main`。不加 `-u` 的话，裸 `git push` 报
+`fatal: The current branch main has no upstream branch.`。
+`git clone` 出来的仓库自带这段跟踪配置，所以 clone 那条路线不用 `-u`。
+
 三个容易撞的点：
 
 - 在 `git init` 之前敲 `git remote add`，会报
@@ -111,6 +129,12 @@ git push -u origin main
   推成 `master` 的话，仓库首页默认显示的 `main` 仍是空的，Actions 页面
   也不会出现 `Run workflow` 按钮。`git branch -M main` 在无提交的空仓库上
   同样有效（实测 HEAD 从 `refs/heads/master` 改为 `refs/heads/main`）。
+
+工程里还有一个 `.gitattributes`，把 `*.sh` / `*.yml` / `*.conf` 等声明成
+`text eol=lf`。Windows 上常见的 `core.autocrlf=true` 会在 checkout 时把脚本
+改写成 CRLF，而 Linux 上的 bash 见到 CRLF 会直接报错；这个文件显式压过全局
+设置，保证 GitHub Actions 的 runner 取到的始终是 LF。如果你在加它之前已经
+跑过 `git add -A`，再跑一次 `git add -A` 把它纳入暂存。
 
 ### 2.3 跑第一次构建
 

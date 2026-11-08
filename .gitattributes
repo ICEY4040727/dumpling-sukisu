@@ -1,0 +1,8 @@
+# Shell scripts and CI YAML must stay LF on every platform.
+# Windows core.autocrlf=true would otherwise rewrite them on checkout,
+# and bash on the Linux runner would fail on CRLF line endings.
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.conf text eol=lf
+*.md   text eol=lf
