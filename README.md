@@ -140,13 +140,36 @@ refspec，完整写法 `main:main`（本地 main → 远程同名分支），只
 
 1. 点仓库顶部的 `Actions` 标签。第一次进来若显示 "Workflows aren't running for this repository"，点那句绿色的 `I understand my workflows, go ahead and enable them`
 2. 左侧列表选 `Build dumpling SukiSU kernel`
-3. 右侧点开 `Run workflow` 下拉：仓库分支选 `main`，**SukiSU-Ultra branch 保持 `main`**（这是 SukiSU 源码分支，默认走 kprobes，不用手工打 hook）
+3. 右侧点开 `Run workflow`：`Use workflow from` 选 `main`，
+   `SukiSU-Ultra branch` 选 `old`
 4. 点绿色的 `Run workflow`，页面刷新出一条黄色转圈的记录，点进去看实时日志
 
+**点开面板会看到两个都带 branch 的下拉框，它们管的是两个不同仓库。**
+
+`Use workflow from` 是 GitHub 自带的，列的是**你自己这个仓库**
+（`ICEY4040727/dumpling-sukisu`）的分支和 tag。它决定两件事：从哪份
+`.github/workflows/build.yml` 读步骤，以及 `actions/checkout` 检出哪个 commit。
+这个仓库目前只有 `main` 一个分支、0 个 tag，所以这里只有 `main` 可选，
+`builtin` 根本不会出现在列表里。GitHub Docs 把这个框叫 "Branch dropdown"，
+原文是 "Select the Branch dropdown menu and click a branch to run the workflow on."
+
+`SukiSU-Ultra branch` 是我们在 `build.yml` 的 `workflow_dispatch.inputs` 里
+自己加的，GitHub 只把它当一个字符串。workflow 把这个值放进环境变量
+`SUKISU_REF`，`build.sh` 拿它去 clone **另一个仓库**：
+
+```bash
+git clone --depth 1 -b "$SUKISU_REF" "$SUKISU_REPO" "$ksu"
+```
+
+所以 `builtin` / `old` / `main` 是 `SukiSU-Ultra/SukiSU-Ultra` 的分支名，
+和你仓库的分支毫无关系。Run #1 证明了 `main` 在 4.4 上编不过，
+现在默认值改成 `old`；`builtin` 要手工在 4.4 源码里打 hook，先别选。
+
 点下去之后，GitHub 生成一次 run，并把它**钉在点击那一刻的默认分支 HEAD 上**。
-这次是 `main` 上的 `76863c4`。之后即使又 push 了新 commit，这次运行读的仍是
-那一版文件；要让新改动生效，得重新点一次 `Run workflow`。运行记录里的
-`head_sha` 就是这个绑定。
+Run #1 钉的是 `76863c4`；`b60a4d5` push 上去之后，新点的 run 会钉在
+`b60a4d5`。之后即使又 push 了新 commit，这次运行读的仍是那一版文件；
+要让新改动生效，得重新点一次 `Run workflow`。运行记录里的 `head_sha`
+就是这个绑定。
 
 反过来，`workflow_dispatch` 只有写在默认分支才会出现按钮（2.2 讲过）。既然
 按钮能点，就说明 `.github/workflows/build.yml` 确实在 `main` 上；日志里
@@ -251,15 +274,36 @@ adb shell "dd if=/sdcard/boot-backup.img of=/dev/block/bootdevice/by-name/boot"
 代码报错，不是自检失败、不是下载失败、也不是按钮点错了。具体哪个文件、
 哪一行，只有日志正文能回答。
 
-怎么把日志拿到手（三选一）：
+怎么把日志拿到手（四选一）：
 
 1. 运行页面点 `build` → 展开红色的 `Compile kernel` → 滚到底，复制最后 50 行
-2. 运行页面右上角 `...` → `Download log archive` → 解压，找 `build/5_Compile kernel.txt`
-3. 想让我读全文，把解压出的文件放到工程目录下、命名 `build.log`，告诉我路径
+2. 运行页面 Summary 区：`Keep compile log on failure` 会把最后 100 行写在这里
+3. 运行页面底部 `Artifacts` 区点 `compile-log-*-runN` 下载，解压出 `build.log`；
+   或右上角 `...` → `Download log archive`，找 `Compile kernel` 那个 txt
+4. 想让我读全文，把解压出的文件放到工程目录下、命名 `build.log`，告诉我路径
 
-匿名访问拿不到正文：GitHub 的 job logs 下载接口对未登录请求返回
+**artifact 传上去之后，我仍然读不到内容，还得你转交一次。** 三层原因：
+
+- GitHub Docs 下载页写死："People who are signed into GitHub and have
+  read access to a repository can download workflow artifacts." 我用的网页
+  抓取是匿名请求，不带登录态。
+- REST 端点分两档：列 artifact（`GET /actions/artifacts`）这类元数据接口
+  注明 "can be used without authentication ... if only public resources are
+  requested"，实测匿名返回 200；**下载 zip** 那个端点没有这句豁免，要求
+  token 带 "Actions: read"，返回 302 到一个 1 分钟过期的签名 URL。
+- 连接器工具集里没有 Actions runs / artifacts / logs 端点，只有仓库文件、
+  issue、PR、release；网页抓取也不处理二进制 zip，本机 Bash 沙箱无外网，
+  `gh` 未登录。
+
+所以我能自己查到「有没有 artifact、叫什么、多大」，看不到里面的日志正文。
+Run #2 产出 `compile-log-old-run2`（id `13619981890`，17129 B）后实测：
+匿名 `GET /actions/artifacts/13619981890/zip` 返回
+`401 Requires authentication`；网页 artifact 下载 URL 落到 404 页 + Sign in。
+Run #1 那轮 job logs 下载接口返回
 `403 Must have admin rights to Repository.`，check-run annotations 只有一句
-`Process completed with exit code 2.`，网页日志是 JS 渲染的。所以这几行得你来贴。
+`Process completed with exit code 2.`，网页日志是 JS 渲染的，同一个道理。
+另有一个坑：`actions/artifacts` 与 jobs 接口会返回缓存旧值（Run #2 已结束后
+仍显示 `total_count: 0` / `in_progress`），加一个随机查询参数才拿到新值。
 
 | 日志里出现 | 是什么 | 怎么办 |
 |---|---|---|
@@ -302,16 +346,20 @@ tracepoint，给 GKI / LKM；`builtin` 不用 kprobes，由内核源码调用 ho
 
 ### 5.2 已加的兼容层、分支选项、缓存
 
-`build.sh` 新增 `apply_compat_patches()`：`prepare` 阶段把 SukiSU 源码里所有
-`MODULE_IMPORT_NS(...)` 调用注释掉。4.4 没有 module symbol namespace，去掉
-这行在语义上是空操作；外层 `#if/#else/#endif` 保留，空分支无害。补丁幂等，
-重复运行不会叠加。它只解决**当前已知**的第一处，后续错误要一轮轮收。
+`build.sh` 的 `apply_compat_patches()` 在 `prepare` 阶段生成
+`ksu_44_compat.h` 并注入源码，处理三处已核实的 4.4 缺口：中和
+`MODULE_IMPORT_NS(...)`（4.4 无 module symbol namespace，语义空操作，外层
+`#if/#else/#endif` 保留）、`#define TWA_RESUME 1`、以及用
+`vfs_read`/`vfs_write` 垫片替换 `kernel_read`/`kernel_write`。补丁幂等，
+单测覆盖注入位置、子目录相对路径、二次运行 0 改动、无关文件不变。
+依据见 5.3 / 5.4，后续错误仍要一轮轮收。
 
 `build.yml`：
 
 - 分支下拉框扩成 `old` / `builtin-new` / `builtin` / `main`，默认 `old`
-  —— 最老的代码快照，Kbuild 只有 16 个对象，且没有 `syscall_hook.h`。
-  **这是待验证的实验，不是"应该能编过"的结论。**
+  —— 当时按"最老的代码快照、Kbuild 只有 16 个对象"选的。**Run #2 证明这个
+  判断不成立**，见 5.4：`old` 几乎没有 4.4 兼容层，真正带完整垫片的是
+  `builtin`。保留 `old` 作为当前实验分支，是为了先用一轮确认剩余不兼容点。
 - 加 `actions/cache/restore@v4` + `actions/cache/save@v4`，只缓存
   `work/*.zip`、`*.tar.gz`、clang、prebuilts；`prepare` 成功后立刻保存，
   因为编译失败会跳过 cache 的 post 步骤。内核树和 KernelSU checkout 不缓存，
@@ -331,14 +379,78 @@ tracepoint，给 GKI / LKM；`builtin` 不用 kprobes，由内核源码调用 ho
   `builtin/kernel/Kconfig` 里（全文只有 KSU / KPM / SUSFS 系列）；那一段是
   官网引用的 backslashxx/KernelSU Kconfig 参考表。别去 defconfig 里开它。
 
-### 5.3 下一轮怎么跑
+### 5.3 Run #2 的真实报错，和那三条 warning
 
-push 改动 → Actions → `Run workflow` → 仓库分支选 `main`，
-SukiSU-Ultra branch 选 `old`。看 `Compile kernel` 的新报错。有缓存后每轮
-几分钟；把日志贴出来，逐条补兼容层。
+Run #2（`42485901023`，`head_sha=b60a4d5`，12m37s）`Prepare` 与缓存保存
+都成功，`Compile kernel` 跑 5m01s 后 exit code 2。致命错误只有一条：
 
-**止损点**：若连续 2–3 轮仍卡在 5.x 才有的设施（BTF、namespace、seccomp
-cache 一类），就该承认新版 SukiSU 不支持 4.4，而不是无限打补丁。社区
+```
+../drivers/kernelsu/allowlist.c:427:32: error: use of undeclared identifier 'TWA_RESUME'
+  427 |     if (task_work_add(tsk, cb, TWA_RESUME)) {
+```
+
+`TWA_RESUME` 不是 4.4 的东西。抓 raw 头核对过：
+
+| 内核 | `task_work_add` 第三参数 | `TWA_RESUME` |
+|---|---|---|
+| 4.4（LineageOS msm8998） | `bool` | 不存在 |
+| v5.9 | `int` | `#define TWA_RESUME 1` |
+| v5.10 | `enum task_work_notify_mode` | 枚举值，等于 1 |
+
+所以外部那条"换成 4.4 支持的 task-work flag"的建议**前提不成立**：4.4 没有
+flag 概念，只有一个 bool `notify`。`TWA_RESUME` 在新内核里的值就是 1，语义
+等价于 `notify=true`，因此 `#define TWA_RESUME 1` 是精确对应，不是凑合。
+另外它给的链接指向
+`ICEY4040727/dumpling-sukisu/blob/.../drivers/kernelsu/allowlist.c`，
+实测该路径返回 `404 Not Found` —— 这个文件不在你的仓库里，是 CI 在 runner
+上 clone 到内核树的 SukiSU 源码。改你仓库里的任何文件都碰不到它。
+
+**三条 warning 不是"非致命可忽略"**，它们揭示了一个运行时 bug：
+
+```
+allowlist.c:385  kernel_write(fp, &magic, sizeof(magic), &off)
+include/linux/fs.h:2660  extern ssize_t kernel_write(struct file *, const char *, size_t, loff_t);
+```
+
+4.4 的 `kernel_write` 第四参数是 `loff_t` **值**，`kernel_read` 更是完全不同的
+参数顺序 `kernel_read(file*, loff_t, char*, unsigned long)`。SukiSU 传的是
+5.x 的 `(buf, count, loff_t *)`。`&off` 会被当成整数偏移，allowlist 持久化
+会写到错误位置。所以补丁用 `vfs_read` / `vfs_write`（这两者本来就收
+`loff_t *` 并自动推进）做垫片，而不是只把 warning 压掉。
+
+### 5.4 分支格局纠正：选错的是 `old`
+
+我上一轮写"`builtin` / `old` 分支才带 `kernel_compat.h`（<4.14 的
+kernel_read/write、<4.12 的 kvmalloc、<5.2 的 strscpy）"——**把两个分支
+混成了一句**。抓全文核对：
+
+- `old/kernel/kernel_compat.h` 只有一个 `ksu_copy_from_user_retry()`，而且它
+  直接调用 `copy_from_user_nofault()`（5.8+）。`allowlist.c` 连这个头都没
+  include。
+- `builtin/kernel/kernel_compat.h` 才是完整的 4.4 兼容层：`<4.14` 的
+  `ksu_kernel_read_compat` / `ksu_kernel_write_compat`、`<4.12` 的 kvmalloc、
+  `<5.2` 的 strscpy、`<5.7` 的 `#define TWA_RESUME 1`，外加 close_fd、
+  groups_sort、selinux_inode/cred 等一整套。
+
+也就是说 Run #2 撞的两处，`builtin` 早就解决了。代价是 `builtin` 不用
+kprobes，得在 4.4 源码里手工打 hook（见 5.2 的三个坑）。
+
+本轮补丁选择"借用 `builtin` 的垫片、留在 `old` 的 kprobes 路线"：新建
+`ksu_44_compat.h`，只摘取上述两段官方垫片，注入到所有用到
+`TWA_RESUME` / `kernel_read` / `kernel_write` 的 `.c`。没有整包复制
+`builtin` 的 compat 头，因为它 `<4.10` 分支 extern 了
+`install_session_keyring_to_cred`，在 4.4 上未必有定义；也没有追加到
+`old` 自带的 `kernel_compat.h`，因为那个文件里的
+`copy_from_user_nofault()` 会引出新的 5.8+ 依赖。
+
+**下一轮**：push 三个改动 → Actions → `Run workflow` → 仓库分支 `main`，
+SukiSU-Ultra branch 仍选 `old`。失败时 Summary 现在会先列所有
+`error:` 行（不再是只有尾部 100 行），复制那一段就够。
+
+**止损点**：Run #1 是 `MODULE_IMPORT_NS`，Run #2 是 `TWA_RESUME` +
+kernel_read/write，都是"5.x API 直接用在 4.4"的同一模式。若 Run #3 还成片
+出现这类符号（`copy_from_user_nofault`、BTF、namespace、seccomp cache），
+就该换 `builtin` 并接受手工 hook，而不是继续逐条打垫片。社区
 `Seshiria/op5dc` 的 `4.4.302v20241202` release 里仍有
 `Deprecated-op5lin21-dc-ksu11804-44302v20241202.zip`（Asset URL 可见），
 但那是 **LineageOS 21 / Android 14** 的 KernelSU 包，不是 SukiSU，与当前
@@ -348,7 +460,20 @@ cache 一类），就该承认新版 SukiSU 不支持 4.4，而不是无限打�
 
 ## 6. 边界，说清楚
 
-- 这套脚本在 2026-11-08 跑过第一次真实编译（Run #1）：`prepare` 阶段成功，`Compile kernel` 以 exit code 2 失败。**端到端编译尚未成功**。失败原因已定位（5.1），但后面还有多少 4.4 不兼容点未知，只能一轮轮编译收敛。它是在 Windows 主机上写的，本机 Bash 沙箱无外网（`curl` 返回 HTTP 000），也没有 Linux 内核工具链。所有 URL、哈希、defconfig 名、构建命令、AK3 属性都是从上游 raw 文件核实来的。
-- 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、Makefile 匹配、defconfig 去重追加逻辑、兼容补丁单测与幂等性、交付文件全是 LF 换行。**没有端到端编译过**，也没做 YAML 解析器级语法检查（本机无 PyYAML）。
-- `SUKISU_REF=builtin` 需要在 4.4 源码里手工打 4 个 hook，4.4 是 C89 风格，插错位置就编译失败。**零基础先别碰**，先把 `main` 跑出结果。
+- 2026-11-08 跑过两轮真实编译，`prepare` 与缓存两轮都成功，两轮
+  `Compile kernel` 都以 exit code 2 失败。**端到端编译尚未成功**。Run #1 卡在
+  `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME` 与
+  `kernel_read/write` 签名（5.3）。两轮都是 5.x API 用在 4.4 上的同一模式，
+  后面还有多少未知，只能一轮轮收敛。
+- 脚本在 Windows 主机上写，本机 Bash 沙箱无外网（`curl` HTTP 000），也没有
+  Linux 内核工具链。所有 URL、哈希、defconfig 名、构建命令、AK3 属性都从
+  上游 raw 文件核实；**生成的 C 兼容垫片没有在真实 4.4 树上编译过**，
+  Run #3 才是它的第一次验证。
+- 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、
+  Makefile 匹配、defconfig 去重追加、兼容补丁单测（注入位置、相对路径、
+  幂等性、无关文件不变）、交付文件全是 LF 换行。没做 YAML 解析器级语法
+  检查（本机无 PyYAML）。
+- `SUKISU_REF=builtin` 需要在 4.4 源码里手工打 hook，4.4 是 C89 风格，
+  插错位置就编译失败；但它带完整 4.4 兼容层（5.4）。`main` 已在 Run #1
+  证伪，`old` 已证伪"最老即最兼容"的假设。
 - 刷机有变砖风险。备份 `boot.img` 是唯一的一步回滚，别跳过。

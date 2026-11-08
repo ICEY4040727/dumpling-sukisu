@@ -80,6 +80,11 @@ jobs:
         run: |
           if [ -f build.log ]; then
             {
+              echo '## Compile kernel - error lines'
+              echo '```'
+              grep -nE 'error:|fatal error:|Error [0-9]|undefined reference|No such file' build.log | head -n 80 || true
+              echo '```'
+              echo ''
               echo '## Compile kernel - last 100 lines'
               echo '```'
               tail -n 100 build.log
