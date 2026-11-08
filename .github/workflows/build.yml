@@ -1,0 +1,51 @@
+name: Build dumpling SukiSU kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      sukisu_ref:
+        description: SukiSU-Ultra branch
+        required: true
+        default: main
+        type: choice
+        options:
+          - main
+          - builtin
+
+jobs:
+  build:
+    # Same runner as the upstream op5dc CI (verified in their main.yml).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libssl-dev libc6-dev binutils libgcc-11-dev \
+            zip unzip wget tar python3
+          # GCC 4.9 wrappers expect /usr/bin/python with python2 syntax.
+          sudo apt install -y python2 || true
+          if [ ! -e /usr/bin/python ] && command -v python2 >/dev/null 2>&1; then
+            sudo ln -s "$(command -v python2)" /usr/bin/python || true
+          fi
+
+      - name: Prepare sources and self-check
+        env:
+          SUKISU_REF: ${{ inputs.sukisu_ref }}
+        run: bash ./build.sh prepare
+
+      - name: Compile kernel
+        env:
+          SUKISU_REF: ${{ inputs.sukisu_ref }}
+        run: bash ./build.sh build
+
+      - name: Pack AnyKernel3 zip
+        run: bash ./build.sh pack
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: dumpling-sukisu-${{ inputs.sukisu_ref }}-4.4.302
+          path: out/*.zip
+          compression-level: 0
