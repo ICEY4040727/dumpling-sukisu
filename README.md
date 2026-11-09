@@ -785,7 +785,7 @@ drivers/kernelsu/kernel_includes.h:76:10: fatal error: 'linux/static_call.h' fil
 
 `bash -n`、4 个内嵌 Python 块语法、全 LF、`git diff --check` 都过。
 
-#### 下一轮，以及止损线
+#### 那一轮的指令（已执行，结果见 5.9）
 
 ```powershell
 git add -A
@@ -797,45 +797,166 @@ Actions → `Run workflow` → `Use workflow from` 选 `main`，分支 `builtin`
 prepare 应先出 4 行 `gated:` 和 `OK no ungated header gaps left`，再进
 `Compile kernel`。
 
-**该说清楚的话**：这是第五轮，也是 `builtin` 的 C 代码第一次被编译。
-撞上的是 5.10 设施，不是脚本 bug。后面还有一整片没验证过的 5.x API
-——`kernel_compat.h` 的垫片、selinux state、KPM、preinit runner。
-如果下一轮继续成片冒 5.x 的结构体或符号，逐条打补丁就不是好投入了，
-换路线更诚实：回到当年为 4.4 non-GKI 写的老 KernelSU 集成，或
-`Seshiria/op5dc` 里那份 LineageOS 21 内核包。但后者**只有出包证据，
-没有这台设备上的开机验证**，别把它当成已经验证过的退路。
+**当时的判断**：第五轮，`builtin` 的 C 代码第一次被编译，撞上 5.10
+设施，不是脚本 bug。后面还有一整片没验证过的 5.x API——
+`kernel_compat.h` 的垫片、selinux state、KPM、preinit runner。
+
+Run #6 的结果：4 行 header gate 都过了，编译推进到 `cpu_spoof.c`，撞上
+`vdso/datapage.h`。那句 `OK no ungated header gaps left` 被证明是**预检
+自己的盲区**造成的，5.9 讲根因。止损判断也在 5.9 重新估过。
+
+---
+
+### 5.9 Run #6：预检自己漏了 `vdso/`，以及第一个结构体级不兼容
+
+```
+extension/cpu_spoof.c:29:10: fatal error: 'vdso/datapage.h' file not found
+```
+
+`vdso/datapage.h` 是 5.x 把 vDSO 数据结构泛型化之后才有的头。4.4 只有
+`arch/arm64/include/asm/vdso_datapage.h` 和
+`arch/arm64/kernel/vdso/datapage.h`，没有 `include/vdso/`。
+
+**这次先认自己的错**：5.8 加的 preflight 有两个洞，合起来正好把它放了过去。
+
+1. 扫描只保留一张硬编码前缀表（`linux/`、`asm/`、`crypto/` ...），
+   `vdso/` 不在表里，这一行**根本没被检查**。
+2. 它把任何 `#if` 里的 include 一律当作"4.4 不展开"。可 29 行外面是
+   `#if defined(CONFIG_ARM64) || defined(__aarch64__)`——我们编译的就是
+   arm64，这个条件为真，include 会被展开。
+
+所以上一轮那句 `OK no ungated header gaps left` 是**在我划定的小圈子里
+成立**，不是对整棵源码成立。教训：白名单过滤会制造盲区，条件判断不能
+只数括号。
+
+#### 补头文件不管用，这次是结构体不一样
+
+`cpu_spoof.c` 不只是 include 了 vDSO 头，它真的用了里面的东西：
+
+- `struct vdso_time_data`、`vdso->clock_data[CS_HRES_COARSE].clock_mode`
+- `struct vdso_data` 的 `clock_mode` 字段
+- `struct clocksource` 的 `vdso_clock_mode` 成员
+- `enum vdso_clock_mode`
+
+抓固定 4.4 commit 的原文核对：
+`arch/arm64/include/asm/vdso_datapage.h:38` 的 `struct vdso_data` 字段是
+`cs_cycle_last` / `raw_time_sec` / `xtime_clock_sec` 那一套，**没有**
+`clock_mode`；`include/linux/clocksource.h` 里 `vdso_clock_mode` 出现 0 次，
+也没有 `enum vdso_clock_mode`。
+
+更关键的一点：4.4 arm64 **确实导出** `vdso_data` 这个符号。如果伪造一份
+5.x 布局的 `struct vdso_data` 垫片，`find_kernel_symbol_exact("vdso_data")`
+会成功，然后代码按 5.x 偏移往一块真实的 4.4 内存里写 `clock_mode`。
+这不是"功能不可用"，是内核内存破坏。**垫片这条路不能走。**
+
+#### 改法：在 4.4 上关掉这个可选扩展
+
+`cpu_spoof` 是 io-only 扩展，作用只是伪装 MIDR / bogomips / hwcap，
+不在 root 链路上。`extension.c:528` 只是把
+`ksu_extension_cpu_spoof_io` 注册进 ioctl 分发表。所以 `build.sh` 新增
+`gate_cpu_spoof()`：在 `#include <linux/version.h>` 之后插入
+
+```c
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
+int ksu_extension_cpu_spoof_io(u32 id, void __user *raw)
+{
+    (void)id; (void)raw;
+    return -EOPNOTSUPP;
+}
+#else
+/* ... 上游原文 ... */
+#endif
+```
+
+符号还在，注册照常，4.4 上调用这个 ioctl 得到 `-EOPNOTSUPP`，预处理阶段
+直接跳过整段 5.x 代码。原文件一个字没改，只加头尾两处，带 marker 幂等。
+
+#### 预检改成全量
+
+- 不再按前缀过滤，扫所有 `#include <...>`。
+- 条件栈真正求值：把 `LINUX_VERSION_CODE` 换成 `4.4.302` 的数值、
+  `KERNEL_VERSION(a,b,c)` 展开成整数、`defined(CONFIG_ARM64)` 等按本次
+  配置取真值；支持 `#elif` / `#else` / 嵌套。求不出来的表达式一律当作
+  "会展开"，宁可多报也不漏报。
+- 头文件搜索路径补齐 ccflags 里的
+  `-Isecurity/selinux{,/include}`，以及 `<../fs/mount.h>` 这种通过
+  `include/../` 归一化到 `fs/mount.h` 的写法。
+- 仍然只诊断、不 fail。误报不能挡住一轮 5 分钟的编译。
+
+全量清单 12 项，分三类：4 项是 5.8 已门控的（在原始源码上扫描所以还在
+表里）、6 项是 ccflags / 路径归一化后能解析的（`security.h`、`ss/*.h`、
+`../fs/mount.h`）、**2 项是这次真漏的** `vdso/datapage.h` 和
+`vdso/clocksource.h`。修完之后：108 个活跃系统头，0 个 WARN。
+
+#### 本地实测
+
+| 项目 | 结果 |
+|---|---|
+| 顺序执行 gate → header gates → preflight | 1 行 `gated: cpu_spoof`、4 行 header `gated:`、108 个活跃头零 WARN |
+| 二次运行 | 5 行 `already gated:`，仍零 WARN |
+| **真实 C 预处理器**（`gcc -E`，`LINUX_VERSION_CODE=4.4.302`） | 输出只剩 `ksu_extension_cpu_spoof_io` stub 和 `return -EOPNOTSUPP`，所有 vdso / `clock_data` 代码消失，`#if`/`#endif` 配平，exit 0 |
+| 失败路径 | marker 在但缺 `#endif` → exit 1；缺 `version.h` 锚点 → exit 1；分支无此文件 → skip |
+| selfcheck | 原始 `cpu_spoof.c` 报 `MISSING 4.4 cpu_spoof stub`，修补后通过 |
+
+`bash -n`、5 个内嵌 Python 块、全 LF、`git diff --check` 都过。
+
+#### 下一轮，以及一个说清楚的边界
+
+```powershell
+git add -A
+git commit -m "fix: disable cpu_spoof on 4.4, make header preflight exhaustive"
+git push
+```
+
+Actions → `Run workflow` → `Use workflow from` 选 `main`，分支 `builtin`。
+prepare 应出现 `gated: extension/cpu_spoof.c`、4 行 header `gated:`、
+`preflight: 108 ...` 和 `OK no active header gaps left`。
+
+**预检的边界**：它只能查"这个头文件在不在"，查不了"这个结构体字段在
+不在""这个 API 签名对不对"。`cpu_spoof` 这次就是头文件缺失先暴露、底下
+藏着结构体不兼容。后面还有 KPM、version_spoof、selinux、preinit runner
+没被编译器碰过，同类问题静态扫不出来。
+
+这是第六轮。目前每次都是撞一个、修一个，且这次已经从"缺个头"升级成
+"整个扩展的模型和 4.4 不一样"。如果 Run #7 再冒出三处以上需要裁剪的
+功能，就别继续了——那说明 `builtin` 分支压根没把 4.4 当支持目标，
+换老 KernelSU non-GKI 路线比继续做减法划算。老包只有出包证据、没有
+本机开机验证，换之前要重新核实。
 
 ---
 
 ## 6. 边界，说清楚
 
-- 到 2026-11-09 跑过五轮，**端到端编译一次都没成功过**。Run #1 卡在
+- 到 2026-11-10 跑过六轮，**端到端编译一次都没成功过**。Run #1 卡在
   `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME`
   与 `kernel_read/write` 签名（5.3），两次 `Compile kernel` 都是 exit 2；
   Run #3 在 prepare 自检被拦下（5.5），Run #4 在 prepare 的 hook 插入
-  被拦下（5.6），这两次 `Compile kernel` 是 skipped。Run #5 终于让
-  `builtin` 的 C 代码进了编译器，停在 `linux/static_call.h`（5.8）。
-  换句话说：前四轮连编译器都没见到，第五轮见到了、没编过。
-- 脚本在 Windows 主机上写。这一轮 Bash 沙箱能连 GitHub（raw 主机偶发
-  TLS 失败，API 可用），所以四个 hook 锚点、hook 签名、Kconfig 选项
-  都是抓真实上游文件核过的；但**仍然没有 Linux 内核工具链**。
-  C 兼容垫片、四处 hook 调用、`builtin` 自带 compat 层在 4.4 上的表现，
-  全都没在真实树上编译过。能抓源码 ≠ 能编译。
+  被拦下（5.6），这两次 `Compile kernel` 是 skipped。Run #5 第一次让
+  `builtin` 的 C 代码进编译器，停在 `linux/static_call.h`（5.8）；
+  Run #6 推进到 `cpu_spoof.c`，停在 `vdso/datapage.h`（5.9）。
+  换句话说：前四轮连编译器都没见到，后两轮每次往前走一小段。
+- 脚本在 Windows 主机上写。Bash 沙箱能连 GitHub（raw 主机偶发 TLS
+  失败，API 可用），所以 hook 锚点、签名、Kconfig 选项、4.4 头文件树
+  都是抓真实上游文件核过的；本机还有 MinGW GCC，可以做 `gcc -E`
+  预处理验证。但**没有 Linux 内核工具链**，C 兼容垫片、四处 hook 调用、
+  `builtin` 自带 compat 层在 4.4 上的表现，全都没在真实树上编译过。
+  能抓源码、能跑预处理器 ≠ 能编译内核。
 - 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、
-  Makefile 匹配、defconfig 去重追加、兼容补丁单测（注入位置、相对路径、
-  幂等性、无关文件不变、builtin 分支跳过注入）、hook 插入**对四个真实
-  4.4 源文件**的实测（锚点命中、插在声明之后/语句之前、幂等、锚点
-  缺失时打印真实源码并报错）、头文件门控**对真实 builtin 源码 +
-  真实 4.4 文件清单**的实测（只改 4 行、幂等、preflight 零 WARN、
-  失败路径与 selfcheck 三态）、交付文件全是 LF 换行。没做 YAML 解析器级
-  语法检查（本机无 PyYAML）。
+  Makefile 匹配、defconfig 去重追加、兼容补丁单测、hook 插入**对四个
+  真实 4.4 源文件**的实测、头文件门控与 cpu_spoof 裁剪**对真实 builtin
+  源码 + 真实 4.4 文件清单**的实测（只改该改的行、幂等、全量 preflight
+  108 个活跃头零 WARN、失败路径、selfcheck 各态）、`gcc -E` 证明 4.4
+  分支只保留 stub、交付文件全是 LF 换行。没做 YAML 解析器级语法检查
+  （本机无 PyYAML）。
 - `SUKISU_REF=builtin` 现在是默认分支：4 处 hook 按 4.4 源码锚点自动
-  插入，4 行 5.x-only 头被门控，不用你改 C 代码。它带完整 4.4 兼容层
-  （5.4）；代价是这些 hook 与垫片在真实树上仍一次都没编过。`main` 已在
-  Run #1 证伪，`old` 已证伪"最老即最兼容"的假设。
-- **止损线**：Run #6 若继续成片冒 5.x 结构体/符号，就停手换路线，不再
-  逐条打补丁（5.8）。老 KernelSU 包只有出包证据、没有本机开机验证，
-  换之前要重新核实，不能当现成退路。
+  插入，4 行 5.x-only 头被门控，`cpu_spoof` 扩展在 4.4 上返回
+  `-EOPNOTSUPP`，不用你改 C 代码。`main` 已在 Run #1 证伪，`old` 已
+  证伪"最老即最兼容"的假设。
+- **止损线（5.9 重估）**：预检只能查头文件在不在，查不了结构体字段和
+  API 签名。Run #6 已经从"缺个头"升级到"整个扩展的模型不匹配"。
+  Run #7 若再冒出三处以上需要裁剪的功能，就停手换老 KernelSU non-GKI
+  路线，不再做减法。老包只有出包证据、没有本机开机验证，换之前要
+  重新核实，不能当现成退路。
 - 5.5 里关于 `ksu_handle_sys_reboot` 不存在的结论是错的，5.6 已纠正。
   官网引用的 `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 等选项不属于这条分支，
   手工 hook 没有捷径。

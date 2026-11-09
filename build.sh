@@ -243,6 +243,64 @@ PY
   echo "  fix them one round at a time (see README section 5)."
 }
 
+gate_cpu_spoof() {
+  log "Disabling the CPU-spoof extension on 4.4 (vDSO layout differs)"
+
+  # Run #6: extension/cpu_spoof.c:29 wants <vdso/datapage.h>, absent on 4.4.
+  # A shim header would NOT be enough. The same file then uses
+  #   struct vdso_time_data / struct vdso_data.clock_mode /
+  #   struct clocksource.vdso_clock_mode / enum vdso_clock_mode
+  # none of which exist on 4.4. Verified against the pinned tree:
+  #   arch/arm64/include/asm/vdso_datapage.h:38 struct vdso_data has
+  #     cs_cycle_last / xtime_clock_sec / ... and NO clock_mode field.
+  #   include/linux/clocksource.h has 0 occurrences of vdso_clock_mode.
+  # Worse, 4.4 arm64 DOES export a real "vdso_data" symbol. Faking a 5.x
+  # struct would make the kallsyms lookup succeed and then write 5.x-layout
+  # fields into real 4.4 memory -- a plausible kernel panic.
+  #
+  # cpu_spoof is an optional io-only extension (spoof MIDR/bogomips/hwcap),
+  # not part of the root path: extension.c only registers its ioctl handler.
+  # On 4.4 we keep that symbol, return -EOPNOTSUPP, and let the preprocessor
+  # skip the whole incompatible body through #if / #else / #endif.
+  python3 - "$KDIR/KernelSU/kernel" <<'PY'
+import os, sys
+
+KSU = sys.argv[1]
+MARK = "dumpling-sukisu: 4.4 cpu_spoof stub"
+p = os.path.join(KSU, "extension", "cpu_spoof.c")
+if not os.path.isfile(p):
+    print("  no cpu_spoof.c on this branch; feature gate skipped")
+    sys.exit(0)
+with open(p, encoding="utf-8", errors="replace") as f:
+    t = f.read()
+if MARK in t:
+    if not t.rstrip().endswith("#endif /* " + MARK + " */"):
+        sys.exit("  [FAIL] cpu_spoof.c: stub marker present but closing #endif missing")
+    print("  already gated: extension/cpu_spoof.c")
+    sys.exit(0)
+anchor = "#include <linux/version.h>"
+i = t.find(anchor)
+if i < 0:
+    sys.exit("  [FAIL] cpu_spoof.c: '#include <linux/version.h>' anchor not found")
+pos = i + len(anchor)
+stub = (
+    f"\n\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)\n"
+    f"/* {MARK}: 4.4 has a different vDSO layout; see build.sh. */\n"
+    "int ksu_extension_cpu_spoof_io(u32 id, void __user *raw)\n"
+    "{\n"
+    "    (void)id;\n"
+    "    (void)raw;\n"
+    "    return -EOPNOTSUPP;\n"
+    "}\n"
+    "#else\n"
+)
+t = t[:pos] + stub + t[pos:] + "\n#endif /* " + MARK + " */\n"
+with open(p, "w", encoding="utf-8", newline="") as f:
+    f.write(t)
+print("  gated: extension/cpu_spoof.c (4.4 ioctl returns -EOPNOTSUPP)")
+PY
+}
+
 apply_header_gates() {
   log "Gating headers that do not exist in the 4.4 tree"
 
@@ -314,13 +372,33 @@ for rel, inc, why in GATES:
     print("  gated: %s (%s)" % (rel, inc))
 
 # ---- Preflight -----------------------------------------------------------
-# Purely diagnostic. Walk the unity translation unit and report any UNGATED
-# system #include that the pinned 4.4 tree cannot resolve. Generated headers
-# are whitelisted; uapi/ and arch/ search paths are included. A false positive
-# must never abort prepare -- it only saves us a 5-minute compile round.
+# Run #6: the old version had two blind spots. It only looked at a hard-coded
+# prefix list, so <vdso/datapage.h> was never checked at all; and it assumed
+# EVERY #if block was inactive on 4.4, so an include behind
+# "#if defined(CONFIG_ARM64)" was skipped even though ARM64 is exactly our
+# target. Now: scan every angle-bracket include and evaluate the condition
+# stack with real 4.4 / arm64 values, including #elif and #else.
+# Still diagnostic only -- a false positive must never abort prepare.
 GENERATED = {"generated/compile.h", "generated/utsrelease.h", "linux/version.h"}
-PREFIXES = ("linux/", "uapi/", "asm/", "generated/", "crypto/",
-            "net/", "security/", "trace/")
+LINUX = (4 << 16) | (4 << 8) | 302          # 4.4.302
+TRUE = {"CONFIG_ARM64", "__aarch64__", "CONFIG_64BIT", "CONFIG_KSU",
+        "CONFIG_KPROBES", "CONFIG_SMP", "CONFIG_MODULES"}
+
+def cond(expr):
+    e = expr.strip()
+    e = re.sub(r"KERNEL_VERSION\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
+               lambda m: str((int(m.group(1)) << 16) | (int(m.group(2)) << 8)
+                             | int(m.group(3))), e)
+    e = e.replace("LINUX_VERSION_CODE", str(LINUX))
+    e = re.sub(r"defined\s*\(\s*([A-Za-z_]\w*)\s*\)|defined\s+([A-Za-z_]\w*)",
+               lambda m: "1" if (m.group(1) or m.group(2)) in TRUE else "0", e)
+    e = re.sub(r"\b[A-Z_][A-Z0-9_]*\b", "0", e)
+    e = e.replace("&&", " and ").replace("||", " or ")
+    e = re.sub(r"!(?!=)", " not ", e)
+    try:
+        return bool(eval(e, {"__builtins__": {}}, {}))
+    except Exception:
+        return True       # unknown expression: assume active so it is reported
 
 def resolvable(inc):
     cands = [
@@ -332,42 +410,65 @@ def resolvable(inc):
         "arch/arm64/include/uapi/" + inc,
         "arch/arm64/include/generated/" + inc,
         "arch/arm64/include/generated/uapi/" + inc,
+        # ccflags-y -Isecurity/selinux{,/include} resolves <security.h>, <ss/*>
+        "security/selinux/" + inc,
+        "security/selinux/include/" + inc,
+        # <../fs/mount.h> resolves through -Iinclude -> include/../fs/mount.h
+        os.path.normpath("include/" + inc),
     ]
     return any(os.path.isfile(os.path.join(KDIR, c)) for c in cands)
 
 def scan(path):
-    """Yield (include, line-no, guarded?) for system includes in one file."""
+    """Yield (include, line) for includes that 4.4/arm64 would actually preprocess."""
     if not os.path.isfile(path):
         return
-    depth = 0
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for n, raw in enumerate(f, 1):
-            s = raw.strip()
-            if re.match(r"#\s*(ifdef|ifndef|if)\b", s):
-                depth += 1
-            elif re.match(r"#\s*endif\b", s):
-                depth = max(0, depth - 1)
-            elif depth == 0:
-                m = re.match(r'#include\s*[<"]([^>"]+)[>"]', s)
-                if m and m.group(1).startswith(PREFIXES):
-                    yield m.group(1), n, False
+    stack = []
+    for n, raw in enumerate(open(path, encoding="utf-8", errors="replace"), 1):
+        s = raw.strip()
+        parent = stack[-1]["taken"] if stack else True
+        m = re.match(r"#\s*(ifdef|ifndef|if)\s+(.*)", s)
+        if m:
+            kind, expr = m.group(1), m.group(2)
+            t = (expr.strip() in TRUE) if kind == "ifdef" else \
+                (expr.strip() not in TRUE) if kind == "ifndef" else cond(expr)
+            t = parent and t
+            stack.append({"parent": parent, "taken": t, "any": t})
+            continue
+        m = re.match(r"#\s*elif\s+(.*)", s)
+        if m and stack:
+            it = stack[-1]
+            it["taken"] = it["parent"] and (not it["any"]) and cond(m.group(1))
+            it["any"] = it["any"] or it["taken"]
+            continue
+        if re.match(r"#\s*else\b", s) and stack:
+            it = stack[-1]
+            it["taken"] = it["parent"] and (not it["any"])
+            it["any"] = True
+            continue
+        if re.match(r"#\s*endif\b", s):
+            if stack: stack.pop()
+            continue
+        if all(x["taken"] for x in stack):
+            mm = re.match(r"#include\s*<([^>]+)>", s)
+            if mm:
+                yield mm.group(1), n
 
 main = os.path.join(KSU, "ksu_main.c")
 units = ["kernel_includes.h", "kernel_compat.h"]
 if os.path.isfile(main):
-    units += [p for p in re.findall(r'#include\s*"([^"]+\.c)"',
-              open(main, encoding="utf-8", errors="replace").read())]
+    units += re.findall(r'#include\s*"([^"]+\.c)"',
+                        open(main, encoding="utf-8", errors="replace").read())
 seen, gaps = set(), []
 for rel in units:
-    for inc, n, _ in scan(os.path.join(KSU, rel)):
+    for inc, n in scan(os.path.join(KSU, rel)):
         seen.add(inc)
         if inc not in GENERATED and not resolvable(inc):
             gaps.append("%s (%s:%d)" % (inc, rel, n))
-print("  preflight: %d distinct ungated system includes in unity TU" % len(seen))
+print("  preflight: %d distinct active system includes in unity TU" % len(seen))
 for g in sorted(set(gaps)):
     print("  WARN  unresolvable on 4.4: %s" % g)
 if not gaps:
-    print("  OK  no ungated header gaps left")
+    print("  OK  no active header gaps left")
 PY
 }
 
@@ -603,6 +704,14 @@ extension/kpm/compact.c linux/set_memory.h
 extension/kpm/super_access.c linux/set_memory.h
 GATES
 
+  # If cpu_spoof.c still contains the 5.x vdso include, the 4.4 stub must be
+  # there. Upstream removing that include on its own is fine (nothing to gate).
+  p="$KDIR/KernelSU/kernel/extension/cpu_spoof.c"
+  if [ -f "$p" ] && grep -q '<vdso/datapage.h>' "$p"; then
+    grep -q 'dumpling-sukisu: 4.4 cpu_spoof stub' "$p" \
+      || { echo "  MISSING 4.4 cpu_spoof stub"; ok=0; }
+  fi
+
   if [ "$SUKISU_REF" = "builtin" ]; then
     # Check the exact injected marker in each expected file, not a file count:
     # a count of 3 could be satisfied by unrelated kernel code and let a
@@ -662,11 +771,11 @@ pack_ak3() {
 }
 
 case "$STAGE" in
-  prepare) download_all; integrate_sukisu; apply_compat_patches; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck ;;
+  prepare) download_all; integrate_sukisu; apply_compat_patches; gate_cpu_spoof; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck ;;
   hooks)   [ -d "$KDIR" ] || die "run ./build.sh prepare first"; show_hooks ;;
   build)   [ -f "$KDIR/arch/arm64/configs/$DEFCONFIG" ] || die "run ./build.sh prepare first"; selfcheck; compile_kernel ;;
   pack)    pack_ak3 ;;
-  all)     download_all; integrate_sukisu; apply_compat_patches; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
+  all)     download_all; integrate_sukisu; apply_compat_patches; gate_cpu_spoof; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
   clean)   rm -rf "$WORK"; echo "removed $WORK" ;;
   *)       die "unknown stage '$STAGE' (use prepare|hooks|build|pack|all|clean)" ;;
 esac
