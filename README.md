@@ -709,7 +709,7 @@ Summary 也不在 job 日志页。点运行页左侧菜单的 **Summary**（URL 
 
 ---
 
-### 5.8 Run #5：编译器终于见到 C 代码，停在 5.10 的头文件上
+### 5.8 Run #5：编译器终于见到 C 代码，撞上内核 5.10 才有的头文件
 
 这一轮 `Compile kernel` 真的启动了。日志末尾那四行 `Error 2` 不是四个
 错误：最内层 `drivers/kernelsu/ksu_main.o` 编译失败，make 沿
@@ -900,7 +900,7 @@ int ksu_extension_cpu_spoof_io(u32 id, void __user *raw)
 
 `bash -n`、5 个内嵌 Python 块、全 LF、`git diff --check` 都过。
 
-#### 下一轮，以及一个说清楚的边界
+#### 那一轮的指令（已执行，结果见 5.10）
 
 ```powershell
 git add -A
@@ -912,51 +912,167 @@ Actions → `Run workflow` → `Use workflow from` 选 `main`，分支 `builtin`
 prepare 应出现 `gated: extension/cpu_spoof.c`、4 行 header `gated:`、
 `preflight: 108 ...` 和 `OK no active header gaps left`。
 
-**预检的边界**：它只能查"这个头文件在不在"，查不了"这个结构体字段在
-不在""这个 API 签名对不对"。`cpu_spoof` 这次就是头文件缺失先暴露、底下
-藏着结构体不兼容。后面还有 KPM、version_spoof、selinux、preinit runner
-没被编译器碰过，同类问题静态扫不出来。
+**预检的边界**：只能查"头文件在不在"，查不了结构体字段和 API 签名。
+`cpu_spoof` 就是头文件先暴露、底下藏着整个数据模型不兼容。
 
-这是第六轮。目前每次都是撞一个、修一个，且这次已经从"缺个头"升级成
-"整个扩展的模型和 4.4 不一样"。如果 Run #7 再冒出三处以上需要裁剪的
-功能，就别继续了——那说明 `builtin` 分支压根没把 4.4 当支持目标，
-换老 KernelSU non-GKI 路线比继续做减法划算。老包只有出包证据、没有
-本机开机验证，换之前要重新核实。
+下面两句当时写错了，5.10 纠正：以为 KPM、version_spoof、selinux、
+preinit runner 还没被编译器碰过；以为 Run #7 再冒出三处裁剪就该换
+路线。unity build 是单个翻译单元，所有 `.c` 在编 `ksu_main.o` 时一起
+被解析；而 Run #7 那几处错误来自同一个假开关。
+
+---
+
+### 5.10 Run #7：五个错误，共用一个假开关
+
+日志里五类 `error:`，散在四个文件：
+
+| 位置 | 报错 | 4.4 上的真实情况 |
+|---|---|---|
+| `kpm/kpm.c:182` | `access_ok` 宏参数太少、标识符未声明 | `arch/arm64/include/asm/uaccess.h:134` 是 `#define access_ok(type, addr, size)`，三参数，源码只传两个。clang 宏展开失败后把 `access_ok` 当普通标识符，第二条错误是第一条的影子 |
+| `kpm/super_access.c:172` | `task_struct` 没有 `security` 成员 | 4.4 的 `include/linux/sched.h` 里没有 security blob，它在 `struct cred` 里。而 `lineage_oneplus5_defconfig` 有 `CONFIG_SECURITY=y`，`#ifdef CONFIG_SECURITY` 必然展开 |
+| `kpm/super_access.c:175` | `sizeof` 作用于不完整数组 | 上一个 `DEFINE_MEMBER` 展开失败，`task_struct_members[]` 没定义完。连带错误，不是第四个 bug |
+| `manager/pkg_observer.c:24,37` | `susfs_parse_priority_app_strings` 隐式声明 | 全分支 grep：2 次调用、**0 次定义**。它来自外部 susfs4ksu 补丁，4.4 树没有 `fs/susfs.c` |
+| `supercall/dispatch.c:622` | `kvcalloc` 隐式声明 | 4.4 没有。`kernel_compat.h` 自己已经垫了 `kvmalloc` / `kvmalloc_array` / `kvfree`，唯独漏了 `kvcalloc` |
+
+一个反常的地方先跳出来：defconfig 里 `# CONFIG_KPM is not set` 和
+`# CONFIG_KSU_SUSFS is not set` 都是关的，报错却全从这两个模块里来。
+
+去查 `kernel/Makefile:110-114`：
+
+```make
+ifeq ($(CONFIG_KPM), y)
+$(info -- KPM is enabled)
+else
+$(info -- KPM is disabled)
+endif
+```
+
+开关只用来打印一行日志。`ksu-y := ksu_main.o` 是唯一的目标，没有任何
+`obj-$(CONFIG_KPM)`；`ksu_main.c:83-86` 又把四个 KPM 的 `.c` 用
+`#include "..."` 无条件拼进同一个翻译单元。于是关掉 KPM 对编译毫无
+影响——它打印 `KPM is disabled`，然后照编 KPM 代码。SUSFS 同理，
+`pkg_observer.c` 那两行调用没有 `#ifdef CONFIG_KSU_SUSFS`。
+
+5.4 里说 `builtin` "带完整 4.4 兼容层"，这句也要收回。它有头文件门控和
+内存 API 垫片，没有数据模型兼容。`task_struct.security` 和 5.9 的 vDSO
+布局都属于后者。
+
+#### 修的是开关，不是错误
+
+`gate_optional_features()` 做四件事：
+
+1. `ksu_main.c`：四个 KPM unity include 包进 `#ifdef CONFIG_KPM`；
+2. `extension/extension.c`：`kpm_handler` 的定义和注册各包一层
+   `#ifdef CONFIG_KPM`；
+3. `manager/pkg_observer.c`：两处 `susfs_parse_priority_app_strings()`
+   包进 `#ifdef CONFIG_KSU_SUSFS`；
+4. `kernel_compat.h`：在自带的 kvmalloc 系列旁边补 `kvcalloc`，落到
+   `kzalloc` / `vzalloc`（4.4 `slab.h:618`、`vmalloc.h:73` 都有）。
+
+前三条把上游自己写好的开关接上，第四条补上上游垫片漏掉的一个成员。
+没有伪造结构体，没有动 root 链路。裁 KPM 之前扫过全树符号：
+`ksu_extension_kpm_*` 只被 `extension.c` 的 handler 引用，头文件里是
+extern 声明；`compact.c` 与 `super_access.c` 的导出函数在别处零引用。
+裁掉不会留 `undefined reference`。
+
+KPM 是什么决定了裁掉有没有代价。`extension/kpm/kpm.h:6` 写的是
+Kernel Patch Module，命令集在 `include/uapi/extension.h:183-191`：
+LOAD / UNLOAD / LIST / INFO / CONTROL / NUM / VERSION / LOAD_EVENT，
+就是运行时往内核里加载和卸载补丁模块。它和 KSU 的 systemless 模块
+（`/data/adb/modules`，覆盖文件系统）不是一回事。
+
+SukiSU 自己不实现加载器。`extension/kpm/kpm.c:24` 的
+`sukisu_kpm_bridge` 靠 `find_kernel_symbol_exact("__arm64_sys_truncate")`
+找已被 KernelPatch 接管的系统调用入口，再用三个魔数探测 KP 在不在
+（`bridge.h:13-15`）；`kpm.c:46-48` 写明了没有 KP 就返回
+`-EOPNOTSUPP`。我们这棵树是 LineageOS 内核加 SukiSU，没有
+KernelPatch，KPM 编进去也是死的。Kconfig 里它 `default n`、help 写
+"may affect system stability"、`select KALLSYMS_ALL`，本来就该关。
+裁掉损失为零，root 链路（四处 hook → sucompat → allowlist →
+supercall）一行没动。
+
+#### 为什么这轮没有按 5.9 的止损线停手
+
+5.9 写的是"再冒出三处以上需要裁剪的功能就换路线"。字面上触发了。
+两条新证据把判断翻过来。
+
+一是 `ksu_main.c` 的 unity build 意味着**所有** `.c` 在编译
+`ksu_main.o` 时一次性全被解析。"KPM、selinux、preinit runner 还没被
+编译器碰过"这句也是错的。Run #7 只报这五类，说明 compat 层在其余
+几十个文件上是生效的，后面没有成片的新子系统排队。
+
+二是错误集中在同一个假开关上，五条里三条是 KPM 的直接或连带后果。
+接上开关一次消掉，不是每轮撞一个修一个。
+
+死线因此换成更硬的一条：Run #8 若再出现**新的子系统**级不兼容
+（不是这几处的连带错误，也不是缺一行垫片），就不再改 `builtin`。
+到那一步能下的结论只有一个：这条分支没把 4.4 当支持目标，继续做
+减法是替上游补一个不存在的端口。
+
+#### 实测
+
+| 项目 | 结果 |
+|---|---|
+| 按 CI 顺序 裁剪 → header gates → feature gates → preflight | 4 行 `gated:` + 1 行 `shimmed:`，108 个活跃系统头零 WARN |
+| 二次运行 | 4 行 `already gated/shimmed`，零 WARN |
+| **真实 C 预处理器**（`gcc -E`，4.4 宏，98 个 fake include 各带唯一 token） | `CONFIG_KPM` 关：拉进 89 个 unity 文件，KPM 的 4 个 `.c` 全不在；开：93 个，差异正好是那 4 个 `.c`，其余文件保留 |
+| `gcc -E` 符号检查 | `kpm_handler` / `ksu_extension_kpm_ops` / `susfs_parse_priority_app_strings` 消失；`cpu_spoof_handler` / `ksu_observer_init` 保留 |
+| `kvcalloc` 宏展开 | `kvcalloc(4, 8, 0)` → `ksu_kvcalloc(4, 8, 0)`，exit 0 |
+| 失败路径 | KPM include 块被上游改名 → exit 1；susfs 调用数变化 → exit 1；分支无这些文件 → skip |
+| selfcheck 三态 | 未修补报 4 项 MISSING；全修补 `ok=1`；只还原一个文件 → 只报那一个 |
+
+`bash -n`、6 个内嵌 Python 块、全 LF、`git diff --check` 都过。
+门控后的 C 代码在 4.4 上能否编译、链接期符号齐不齐、能否开机，
+**仍然一次都没验证过**。
+
+#### 下一轮
+
+```powershell
+git add -A
+git commit -m "fix: wire KPM/SUSFS switches into unity build, add kvcalloc shim"
+git push
+```
+
+Actions → `Run workflow` → `Use workflow from` 选 `main`，分支 `builtin`。
+prepare 预期先出 `gated: extension/cpu_spoof.c`、4 行 header `gated:`、
+`preflight: 108 ...`，再出 4 行 feature `gated:` / `shimmed:`，然后进
+`Compile kernel`。缓存还在，prepare 约 20 秒。
 
 ---
 
 ## 6. 边界，说清楚
 
-- 到 2026-11-10 跑过六轮，**端到端编译一次都没成功过**。Run #1 卡在
+- 到 2026-11-10 跑过七轮，**端到端编译一次都没成功过**。Run #1 卡在
   `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME`
-  与 `kernel_read/write` 签名（5.3），两次 `Compile kernel` 都是 exit 2；
-  Run #3 在 prepare 自检被拦下（5.5），Run #4 在 prepare 的 hook 插入
-  被拦下（5.6），这两次 `Compile kernel` 是 skipped。Run #5 第一次让
-  `builtin` 的 C 代码进编译器，停在 `linux/static_call.h`（5.8）；
-  Run #6 推进到 `cpu_spoof.c`，停在 `vdso/datapage.h`（5.9）。
-  换句话说：前四轮连编译器都没见到，后两轮每次往前走一小段。
+  与 `kernel_read/write` 签名（5.3）；Run #3 在 prepare 自检被拦下
+  （5.5），Run #4 在 hook 插入被拦下（5.6），这两次 `Compile kernel`
+  是 skipped。Run #5 起 `builtin` 的 C 代码开始进编译器，依次停在
+  `static_call.h`（5.8）、`vdso/datapage.h`（5.9）、KPM 与 SUSFS 的
+  五类 API/结构体错误（5.10）。前四轮连编译器都没见到，后三轮每次
+  往前走一段。
 - 脚本在 Windows 主机上写。Bash 沙箱能连 GitHub（raw 主机偶发 TLS
-  失败，API 可用），所以 hook 锚点、签名、Kconfig 选项、4.4 头文件树
-  都是抓真实上游文件核过的；本机还有 MinGW GCC，可以做 `gcc -E`
-  预处理验证。但**没有 Linux 内核工具链**，C 兼容垫片、四处 hook 调用、
-  `builtin` 自带 compat 层在 4.4 上的表现，全都没在真实树上编译过。
-  能抓源码、能跑预处理器 ≠ 能编译内核。
+  失败，API 可用），hook 锚点、签名、Kconfig 选项、4.4 头文件树都是抓
+  真实上游文件核过的；本机有 MinGW GCC，可以做 `gcc -E` 预处理验证。
+  但**没有 Linux 内核工具链**。C 兼容垫片、四处 hook 调用、`builtin`
+  自带 compat 层在 4.4 上的表现，全都没在真实树上编译过。能抓源码、
+  能跑预处理器 ≠ 能编译内核。
 - 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、
   Makefile 匹配、defconfig 去重追加、兼容补丁单测、hook 插入**对四个
-  真实 4.4 源文件**的实测、头文件门控与 cpu_spoof 裁剪**对真实 builtin
-  源码 + 真实 4.4 文件清单**的实测（只改该改的行、幂等、全量 preflight
-  108 个活跃头零 WARN、失败路径、selfcheck 各态）、`gcc -E` 证明 4.4
-  分支只保留 stub、交付文件全是 LF 换行。没做 YAML 解析器级语法检查
-  （本机无 PyYAML）。
+  真实 4.4 源文件**的实测、头文件门控与 cpu_spoof / KPM / SUSFS 裁剪
+  **对真实 builtin 源码 + 真实 4.4 文件清单**的实测（只改该改的行、
+  幂等、全量 preflight 108 个活跃头零 WARN、失败路径、selfcheck 各态）、
+  `gcc -E` 证明 4.4 分支只保留 stub 且 KPM 的 4 个 `.c` 不进翻译单元、
+  交付文件全是 LF 换行。没做 YAML 解析器级语法检查（本机无 PyYAML）。
 - `SUKISU_REF=builtin` 现在是默认分支：4 处 hook 按 4.4 源码锚点自动
-  插入，4 行 5.x-only 头被门控，`cpu_spoof` 扩展在 4.4 上返回
-  `-EOPNOTSUPP`，不用你改 C 代码。`main` 已在 Run #1 证伪，`old` 已
-  证伪"最老即最兼容"的假设。
-- **止损线（5.9 重估）**：预检只能查头文件在不在，查不了结构体字段和
-  API 签名。Run #6 已经从"缺个头"升级到"整个扩展的模型不匹配"。
-  Run #7 若再冒出三处以上需要裁剪的功能，就停手换老 KernelSU non-GKI
-  路线，不再做减法。老包只有出包证据、没有本机开机验证，换之前要
-  重新核实，不能当现成退路。
+  插入，4 行 5.x-only 头被门控，`cpu_spoof` 返回 `-EOPNOTSUPP`，KPM
+  与 SUSFS 的开关真正接进 unity build，补上 `kvcalloc` 垫片。不用你改
+  C 代码。`main` 已在 Run #1 证伪，`old` 已证伪"最老即最兼容"的假设。
+- **止损线（5.10 重估）**：预检查不了结构体字段和 API 签名。前几轮
+  需要从外部造垫片，Run #7 变成"把上游写好的开关接上"，而 unity build
+  已让所有代码过了一遍编译器，属收敛信号。新死线：Run #8 若再出现
+  **新的子系统**级不兼容（不是连带错误或一行垫片），就停手换老
+  KernelSU non-GKI 路线。老包只有出包证据、没有本机开机验证，换之前
+  要重新核实，不能当现成退路。
 - 5.5 里关于 `ksu_handle_sys_reboot` 不存在的结论是错的，5.6 已纠正。
   官网引用的 `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 等选项不属于这条分支，
   手工 hook 没有捷径。

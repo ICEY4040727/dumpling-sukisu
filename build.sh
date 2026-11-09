@@ -301,6 +301,162 @@ print("  gated: extension/cpu_spoof.c (4.4 ioctl returns -EOPNOTSUPP)")
 PY
 }
 
+gate_optional_features() {
+  log "Wiring the upstream KPM/SUSFS switches into the unity build"
+
+  # Run #7 produced five errors that look unrelated but share one cause:
+  # SukiSU's Kconfig has CONFIG_KPM / CONFIG_KSU_SUSFS, but the Makefile only
+  # prints them ($(info -- KPM is disabled)) and ksu_main.c #includes EVERY
+  # .c unconditionally into one translation unit. Turning the options off in
+  # the defconfig therefore changes nothing at compile time.
+  #
+  # Verified against builtin HEAD 1cfa573 and pinned 4.4 commit 9932c9e...:
+  #   kpm/kpm.c:182            access_ok(addr, size)  -- 4.4 needs 3 args
+  #                            (arch/arm64/include/asm/uaccess.h:134)
+  #   kpm/super_access.c:171   DEFINE_MEMBER(task_struct, security) -- 4.4
+  #                            sched.h has NO security field; CONFIG_SECURITY=y
+  #                            in lineage_oneplus5_defconfig makes it expand
+  #   kpm/super_access.c:175   sizeof on an incomplete array -- downstream of
+  #                            the failed DEFINE_MEMBER above, not a 4th bug
+  #   manager/pkg_observer.c:24,37  susfs_parse_priority_app_strings() has
+  #                            ZERO definitions in the whole branch (it comes
+  #                            from the external susfs4ksu patch)
+  #   supercall/dispatch.c:622     kvcalloc() -- absent on 4.4; the branch's
+  #                            own kernel_compat.h already shims kvmalloc,
+  #                            kvmalloc_array and kvfree but forgot kvcalloc
+  #
+  # KPM is safe to drop: a full-tree symbol scan shows its only external
+  # references are the kpm_handler definition/registration in extension.c
+  # (the .h files merely declare externs). No root-path code calls it.
+  # The SUSFS call is a priority-uid bitmap refresh; skipping it leaves the
+  # throne tracker intact.
+  python3 - "$KDIR/KernelSU/kernel" <<'PY'
+import os, sys
+
+KSU = sys.argv[1]
+MARK_KPM = "dumpling-sukisu: 4.4 KPM gate"
+MARK_SUSFS = "dumpling-sukisu: 4.4 SUSFS gate"
+MARK_KV = "dumpling-sukisu: 4.4 kvcalloc shim"
+
+def fail(msg):
+    sys.exit("  [FAIL] " + msg)
+
+def load(rel):
+    p = os.path.join(KSU, rel)
+    if not os.path.isfile(p):
+        return None, None
+    with open(p, encoding="utf-8", errors="replace") as f:
+        return p, f.read()
+
+def save(p, t):
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(t)
+
+changed = 0
+
+# ---- 1. ksu_main.c: put the four KPM unity includes behind CONFIG_KPM ----
+p, t = load("ksu_main.c")
+if p is not None:
+    block = ('#include "extension/kpm.c"\n'
+             '#include "extension/kpm/kpm.c"\n'
+             '#include "extension/kpm/compact.c"\n'
+             '#include "extension/kpm/super_access.c"\n')
+    gated = ("#ifdef CONFIG_KPM /* " + MARK_KPM + " */\n" + block +
+             "#endif /* CONFIG_KPM */\n")
+    if MARK_KPM in t:
+        if gated not in t:
+            fail("ksu_main.c: marker present but the KPM gate block is malformed")
+        print("  already gated: ksu_main.c (KPM unity includes)")
+    elif block in t:
+        save(p, t.replace(block, gated, 1))
+        changed += 1
+        print("  gated: ksu_main.c (4 KPM unity includes behind CONFIG_KPM)")
+    else:
+        fail("ksu_main.c: the 4 KPM unity includes were not found verbatim")
+
+# ---- 2. extension.c: gate the handler definition and its registration ----
+p, t = load(os.path.join("extension", "extension.c"))
+if p is not None:
+    if MARK_KPM in t:
+        if t.count(MARK_KPM) != 2:
+            fail("extension/extension.c: expected 2 KPM markers, found %d" % t.count(MARK_KPM))
+        print("  already gated: extension/extension.c (KPM handler)")
+    else:
+        lines = t.splitlines(True)
+        def find(pred, start=0):
+            return next((i for i in range(start, len(lines)) if pred(lines[i])), None)
+        si = find(lambda l: "static const struct ksu_extension_handler kpm_handler = {" in l)
+        if si is None:
+            fail("extension/extension.c: kpm_handler definition not found")
+        ei = find(lambda l: l.strip() == "};", si + 1)
+        if ei is None:
+            fail("extension/extension.c: end of kpm_handler not found")
+        ri = find(lambda l: "ksu_register_extension_handler(&kpm_handler)" in l)
+        if ri is None:
+            fail("extension/extension.c: kpm_handler registration not found")
+        if ri + 1 >= len(lines) or "failed to register kpm" not in lines[ri + 1]:
+            fail("extension/extension.c: kpm registration pr_err line moved")
+        opens = "#ifdef CONFIG_KPM /* " + MARK_KPM + " */\n"
+        closes = "#endif /* CONFIG_KPM */\n"
+        for idx, text in sorted([(ri + 2, closes), (ri, opens),
+                                 (ei + 1, closes), (si, opens)], reverse=True):
+            lines[idx:idx] = [text]
+        save(p, "".join(lines))
+        changed += 1
+        print("  gated: extension/extension.c (KPM handler + registration)")
+
+# ---- 3. pkg_observer.c: gate the two external-SUSFS calls ----
+p, t = load(os.path.join("manager", "pkg_observer.c"))
+if p is not None:
+    if MARK_SUSFS in t:
+        print("  already gated: manager/pkg_observer.c (SUSFS calls)")
+    else:
+        lines = t.splitlines(True)
+        hits = [i for i, l in enumerate(lines)
+                if l.strip() == "susfs_parse_priority_app_strings();"]
+        if len(hits) != 2:
+            fail("pkg_observer.c: expected 2 susfs_parse_priority_app_strings() calls, found %d" % len(hits))
+        for i in reversed(hits):
+            lines[i:i+1] = ["#ifdef CONFIG_KSU_SUSFS /* " + MARK_SUSFS + " */\n",
+                            lines[i],
+                            "#endif /* CONFIG_KSU_SUSFS */\n"]
+        save(p, "".join(lines))
+        changed += 1
+        print("  gated: manager/pkg_observer.c (2 external SUSFS calls)")
+
+# ---- 4. kernel_compat.h: finish the kvmalloc family with kvcalloc ----
+p, t = load("kernel_compat.h")
+if p is not None:
+    if MARK_KV in t:
+        print("  already shimmed: kernel_compat.h (kvcalloc)")
+    else:
+        anchor = "#define kvfree ksu_kvfree\n"
+        if anchor not in t:
+            fail("kernel_compat.h: '#define kvfree ksu_kvfree' anchor not found")
+        shim = (anchor + "\n/* " + MARK_KV + " */\n"
+                "#ifndef kvcalloc\n"
+                "static inline void *ksu_kvcalloc(size_t n, size_t size, gfp_t flags)\n"
+                "{\n"
+                "    size_t total;\n"
+                "    void *buf;\n"
+                "    if (size && n > ((size_t)-1) / size)\n"
+                "        return NULL;\n"
+                "    total = n * size;\n"
+                "    buf = kzalloc(total, flags);\n"
+                "    if (!buf)\n"
+                "        buf = vzalloc(total);\n"
+                "    return buf;\n"
+                "}\n"
+                "#define kvcalloc ksu_kvcalloc\n"
+                "#endif\n")
+        save(p, t.replace(anchor, shim, 1))
+        changed += 1
+        print("  shimmed: kernel_compat.h (kvcalloc -> kzalloc/vzalloc)")
+
+print("  feature gates changed %d files" % changed)
+PY
+}
+
 apply_header_gates() {
   log "Gating headers that do not exist in the 4.4 tree"
 
@@ -712,6 +868,23 @@ GATES
       || { echo "  MISSING 4.4 cpu_spoof stub"; ok=0; }
   fi
 
+  # Run #7: these four gates are what make the KPM/SUSFS defconfig switches
+  # real. Without them a re-clone silently restores the unbuildable code.
+  while IFS='|' read -r f mark want; do
+    p="$KDIR/KernelSU/kernel/$f"
+    [ -f "$p" ] || continue
+    got=$(grep -cF "$mark" "$p") || got=0
+    if [ "$got" -lt "$want" ]; then
+      echo "  MISSING 4.4 feature gate in $f (want $want markers, found $got)"
+      ok=0
+    fi
+  done <<'FEATURES'
+ksu_main.c|dumpling-sukisu: 4.4 KPM gate|1
+extension/extension.c|dumpling-sukisu: 4.4 KPM gate|2
+manager/pkg_observer.c|dumpling-sukisu: 4.4 SUSFS gate|2
+kernel_compat.h|dumpling-sukisu: 4.4 kvcalloc shim|1
+FEATURES
+
   if [ "$SUKISU_REF" = "builtin" ]; then
     # Check the exact injected marker in each expected file, not a file count:
     # a count of 3 could be satisfied by unrelated kernel code and let a
@@ -771,11 +944,11 @@ pack_ak3() {
 }
 
 case "$STAGE" in
-  prepare) download_all; integrate_sukisu; apply_compat_patches; gate_cpu_spoof; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck ;;
+  prepare) download_all; integrate_sukisu; apply_compat_patches; gate_cpu_spoof; apply_header_gates; gate_optional_features; apply_manual_hooks; configure_defconfig; selfcheck ;;
   hooks)   [ -d "$KDIR" ] || die "run ./build.sh prepare first"; show_hooks ;;
   build)   [ -f "$KDIR/arch/arm64/configs/$DEFCONFIG" ] || die "run ./build.sh prepare first"; selfcheck; compile_kernel ;;
   pack)    pack_ak3 ;;
-  all)     download_all; integrate_sukisu; apply_compat_patches; gate_cpu_spoof; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
+  all)     download_all; integrate_sukisu; apply_compat_patches; gate_cpu_spoof; apply_header_gates; gate_optional_features; apply_manual_hooks; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
   clean)   rm -rf "$WORK"; echo "removed $WORK" ;;
   *)       die "unknown stage '$STAGE' (use prepare|hooks|build|pack|all|clean)" ;;
 esac
