@@ -52,7 +52,9 @@ jobs:
       - name: Prepare sources and self-check
         env:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
-        run: bash ./build.sh prepare
+        run: |
+          set -o pipefail
+          bash ./build.sh prepare 2>&1 | tee prepare.log
 
       # Save immediately after prepare. A failed compile skips the cache
       # post-step, which would otherwise re-download ~19 minutes of toolchains
@@ -75,29 +77,32 @@ jobs:
           set -o pipefail
           bash ./build.sh build 2>&1 | tee build.log
 
-      - name: Keep compile log on failure
+      - name: Show error lines and log tails in job summary
         if: failure()
         run: |
-          if [ -f build.log ]; then
+          for f in prepare.log build.log; do
+            [ -f "$f" ] || continue
             {
-              echo '## Compile kernel - error lines'
+              echo "## $f - error lines"
               echo '```'
-              grep -nE 'error:|fatal error:|Error [0-9]|undefined reference|No such file' build.log | head -n 80 || true
+              grep -nE '\[FAIL\]|MISSING|error:|fatal error:|Error [0-9]|undefined reference|No such file' "$f" | head -n 80 || true
               echo '```'
               echo ''
-              echo '## Compile kernel - last 100 lines'
+              echo "## $f - last 100 lines"
               echo '```'
-              tail -n 100 build.log
+              tail -n 100 "$f"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          done
 
-      - name: Upload compile log on failure
+      - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: compile-log-${{ inputs.sukisu_ref }}-run${{ github.run_number }}
-          path: build.log
+          name: build-logs-${{ inputs.sukisu_ref }}-run${{ github.run_number }}
+          path: |
+            prepare.log
+            build.log
           if-no-files-found: warn
           retention-days: 14
 

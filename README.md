@@ -166,7 +166,7 @@ git clone --depth 1 -b "$SUKISU_REF" "$SUKISU_REPO" "$ksu"
 所以 `builtin` / `old` / `main` 是 `SukiSU-Ultra/SukiSU-Ultra` 的分支名，
 和你仓库的分支毫无关系。Run #1 证明 `main` 在 4.4 上编不过，Run #2 证明
 `old` 缺 4.4 兼容层。当前默认值是 `builtin`——它自带完整垫片，所需的
-3 处 hook 由 `build.sh` 在 CI 里自动插入，不用你碰 C 代码（见 5.5）。
+4 处 hook 由 `build.sh` 在 CI 里自动插入，不用你碰 C 代码（见 5.5、5.6）。
 
 点下去之后，GitHub 生成一次 run，并把它**钉在点击那一刻的默认分支 HEAD 上**。
 Run #1 钉的是 `76863c4`；`b60a4d5` push 上去之后，新点的 run 会钉在
@@ -315,16 +315,17 @@ Run #1 那轮 job logs 下载接口返回
 | `fatal error: xxx.h: No such file or directory` / 大量 `error:` 出现在 `Compile kernel` | 4.4.302 与所选 SukiSU 分支不兼容，或自动补丁没覆盖到 | 把 Summary 里的 `error:` 行贴出来逐条补；别自己改 `toolchain.conf` 哈希 |
 | `No space left on device` | runner 磁盘被工具链和 `out/` 占满 | 贴日志，可以加清理步骤，不是你的操作问题 |
 | `/usr/bin/python: bad interpreter` 或 GCC wrapper 报 python 语法错 | Ubuntu 22.04 上 python2 装不上 | 贴日志，我改 workflow 的兼容处理 |
-| `MISSING manual hook in fs/xxx.c` / `[FAIL] ... anchor not found` | 只有 `builtin` 会触发；自动插入时锚点没匹配上 | 贴出 `Inserting manual hooks` 那一段完整输出；`bash ./build.sh hooks` 可预览真实位置 |
+| `MISSING manual hook in fs/xxx.c` / `[FAIL] ... anchor not found` | 只有 `builtin` 会触发；自动插入时锚点没匹配上 | 贴出 `Inserting manual hooks` 那一段完整输出；5.6 起 `[FAIL]` 前会把该函数真实源码带行号打进日志，`bash ./build.sh hooks` 也可预览 |
 | `Prepare sources and self-check` 失败、`Compile kernel` 显示 skipped | 自检主动拦下，编译根本没开始 | 看上面的 `MISSING ...` 行；exit code 1 是脚本 `die`，不是编译器给的 2 |
 | `unknown stage` | 阶段名拼错 | 只能用 `prepare` / `hooks` / `build` / `pack` / `all` / `clean` |
 | `Process completed with exit code 2.` 单独出现在 `Compile kernel` | 这是 GitHub 给步骤盖的结论章，不是报错正文 | 按上面三条取日志；它只说明 `make` 挂了 |
 
-workflow 已补日志留存：`Compile kernel` 的输出用 `tee build.log` 落盘，
-`set -o pipefail` 保证 `make` 的退出码不被管道吃掉；失败时把最后 100 行写进
-运行页的 Summary，并把完整 `build.log` 传成 artifact。这个改动只作用于
-**下一次**运行，已经结束的 Run #1 补不上。`workflow_dispatch` 是唯一触发器，
-所以只是 push 这两个文件不会自动重跑，不用担心白等 23 分钟。
+workflow 已补日志留存：`Prepare sources and self-check` 和 `Compile kernel`
+各自用 `tee prepare.log` / `tee build.log` 落盘，`set -o pipefail` 保证
+退出码不被管道吃掉；失败时把两个日志的错误行和最后 100 行写进 Summary，
+并一起传成 artifact。补 `prepare.log` 是因为 Run #3/#4 都挂在编译之前，
+当时连日志文件都没生成。这些改动只作用于**下一次**运行，已经结束的 run
+补不上。`workflow_dispatch` 是唯一触发器，所以只是 push 不会自动重跑。
 
 ### 5.1 Run #1 的真实报错，和它说明的事
 
@@ -379,9 +380,12 @@ tracepoint，给 GKI / LKM；`builtin` 不用 kprobes，由内核源码调用 ho
   只有 `ksu_handle_execveat_sucompat` / `_ksud`，照抄会链接失败"——
   **这句是错的**。抓 `feature/sucompat.c` 全文核实：非 SUSFS 分支确实
   **定义了** `ksu_handle_execveat`，只是没在头文件里声明，官网用 `extern`
-  声明正是为了绕过它。真正不存在的只有 `ksu_handle_sys_reboot`，5.5
-  因此跳过 reboot hook。官网原话："Check their exact signatures against
-  the branch you build; the patches below are for reference only."
+  声明正是为了绕过它。我接着又错了一句：说 `ksu_handle_sys_reboot`
+  "在 `runtime/ksud.c` 里没有定义，因此跳过 reboot hook"。查全量
+  tarball 才知道它定义在 `supercall/supercall.c` 的非 SUSFS 分支
+  （SUSFS 分支则在 `supercall/dispatch.c`），`ksud.c` 本来就不该有。
+  5.6 把 reboot hook 补回去了。官网原话："Check their exact signatures
+  against the branch you build; the patches below are for reference only."
 - `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 不在 SukiSU-Ultra 的
   `builtin/kernel/Kconfig` 里（全文只有 KSU / KPM / SUSFS 系列）；那一段是
   官网引用的 backslashxx/KernelSU Kconfig 参考表。别去 defconfig 里开它。
@@ -497,30 +501,32 @@ root。与其花 5 分钟编一个死内核，不如在 prepare 就停。
 | `kernel_compat.h` 有 `<4.14` 的 `ksu_kernel_read_compat/write_compat`、`<5.7` 的 `#define TWA_RESUME 1`，另有 kvmalloc、strscpy、close_fd、groups_sort | raw 全文 |
 | `ksu_main.c` 是 unity build：先 `#include "kernel_compat.h"`，再 include 所有 `.c` | raw 全文 |
 | `ksu_handle_execveat` / `ksu_handle_faccessat` / `ksu_handle_stat` 都在 `feature/sucompat.c` 的非 SUSFS 分支定义，签名与官网 `extern` 声明一致 | raw 全文 |
-| `ksu_handle_sys_reboot` 在 `runtime/ksud.c` 里**没有定义** | raw 全文 |
+| `ksu_handle_sys_reboot` 定义在 `supercall/supercall.c` 的非 SUSFS 分支（**不是** `runtime/ksud.c`）；SUSFS 分支在 `supercall/dispatch.c` | builtin 全量 tarball，见 5.6 |
 | `builtin/kernel/Kconfig` 全文只有 KSU / KPM / SUSFS 系列，**没有** `CONFIG_KSU_TAMPER_SYSCALL_TABLE` | raw 全文 |
 
-最后两条决定补丁怎么写。官网说 ARM64 开
-`CONFIG_KSU_TAMPER_SYSCALL_TABLE=y` 就能跳过全部手工 hook——那出自它
-引用的 backslashxx/KernelSU 参考表，SukiSU 里没这个选项，照做只是白改
-defconfig。官网的 reboot hook 也跳过：符号不存在，插进去只会链接期
-`undefined reference`。Android 15 还不需要 `sys_newfstat` 的 ret_hook
-（那是 Android 16+）。
+5.5 写补丁时我漏看了 `supercall/` 目录，据此跳过了 reboot hook。5.6
+已补上。官网说 ARM64 开 `CONFIG_KSU_TAMPER_SYSCALL_TABLE=y` 就能跳过
+全部手工 hook——那出自它引用的 backslashxx/KernelSU 参考表，SukiSU 里
+没这个选项，照做只是白改 defconfig。Android 15 还不需要 `sys_newfstat`
+的 ret_hook（那是 Android 16+）。
 
-#### 三个锚点，来自你这棵 4.4 树
+#### 四个锚点，来自你这棵 4.4 树
 
-不是照官网模板抄的，逐字核过 `lineage-22.2` 的 raw 文件：
+不是照官网模板抄的，逐字核过 `lineage-22.2` 的 raw 文件（5.6 又拿
+GitHub API 重新拉了一遍真实文件做插入测试）：
 
 | 文件 / 函数 | 插在哪一行之前 | 调用 |
 |---|---|---|
 | `fs/exec.c` `do_execveat_common()` | `if (IS_ERR(filename))` | `ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags)` |
 | `fs/open.c` `SYSCALL_DEFINE3(faccessat)` | `if (mode & ~S_IRWXO)` | `ksu_handle_faccessat(&dfd, &filename, &mode, NULL)` |
 | `fs/stat.c` `SYSCALL_DEFINE4(newfstatat)` | `error = vfs_fstatat(dfd, filename, &stat, flag);` | `ksu_handle_stat(&dfd, &filename, &flag)` |
+| `kernel/reboot.c` `SYSCALL_DEFINE4(reboot)` | `if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))` | `ksu_handle_sys_reboot(magic1, magic2, cmd, &arg)` |
 
-三个位置都在局部变量声明之后、第一条语句之前。4.4 是 C89 风格，
-把 `extern` 声明插进声明区会直接编译失败——所以补丁先用函数签名定位，
-再在锚点前插入；找不到锚点就报 `[FAIL] ... anchor not found`，不静默
-跳过。插入带 marker，重复运行不叠加。
+四个位置都在局部变量声明之后、第一条语句之前。4.4 是 C89 风格，
+把 `extern` 声明插进语句之后会直接编译失败——所以补丁先用函数签名定位，
+再检查从 `{` 到锚点之间只有声明/注释/空行，最后才插入；找不到锚点
+就把该函数真实源码打进日志再 `[FAIL]`，不静默跳过。插入带 marker，
+重复运行不叠加。
 
 #### 修掉的两个自己的坑
 
@@ -535,47 +541,149 @@ unity 编译单元里两份定义就是重定义错误。Run #3 被自检提前�
 另有一句写死的提示 "…or switch to the 'builtin' branch"，在你已经选了
 `builtin` 时照样打印，纯属误导，去掉了。
 
+#### 那一轮的结果
+
+按上面的命令 push 后跑出来的就是 Run #4：prepare 在 `fs/open.c` 挂了。
+所以下面 5.6 才是当前有效的版本，5.5 的补丁已被替换。
+
+**当时没验证的**：hook 调用、自带 `kernel_compat.h` 在 4.4 上能否编过、
+以及链接期符号是否齐全。这些到现在仍然没编过一次。
+
+---
+
+### 5.6 Run #4：一个行尾注释，让锚点匹配落空
+
+日志停在：
+
+```
+==> Inserting manual hooks for SUKISU_REF=builtin into the 4.4 tree
+[FAIL] fs/open.c: insert anchor 'if (mode & ~S_IRWXO)' not found within 60 lines of 'SYSCALL_DEFINE3(faccessat,'
+hooked: fs/exec.c (before 'if (IS_ERR(filename))')
+```
+
+注意输出顺序：`hooked: fs/exec.c` 在 `[FAIL]` 之后打印，不是又插了一次。
+Python 的 `sys.exit("...")` 走 stderr，`print` 走 stdout，CI 把两路合并时
+顺序会错开。真正执行的顺序是先 exec.c 成功、再 open.c 失败、stat.c
+根本没轮到。
+
+`exit code 1` 依旧来自脚本自己，不是 `make`。
+
+#### 根因
+
+我写的是整行相等比较：
+
+```python
+bi = next((i for i in range(si, min(si + 60, len(lines)))
+           if lines[i].strip() == before), None)
+```
+
+而这棵 `lineage-22.2` 树的 `fs/open.c:356` 是（`cat -A` 输出，`^I` 是 tab）：
+
+```
+^Iif (mode & ~S_IRWXO)^I/* where's F_OK, X_OK, W_OK, R_OK? */$
+```
+
+`strip()` 只去掉两端空白，去不掉中间的注释。所以这行的字符串是
+`if (mode & ~S_IRWXO)\t/* where's F_OK, X_OK, W_OK, R_OK? */`，
+和 `"if (mode & ~S_IRWXO)"` 永远不相等。`fs/exec.c` 的
+`if (IS_ERR(filename))` 后面干净，所以它能过——报错只挑一个文件，
+正是这个原因。
+
+#### 这次拿到的上游证据
+
+Bash 沙箱这轮能连 GitHub 了（raw 主机偶发 TLS 失败，改用
+`api.github.com/repos/.../contents/...?ref=<sha>` 取 base64 内容）：
+
+| 事实 | 证据 |
+|---|---|
+| `fs/open.c:356` 那行带行尾注释 | 固定 commit `9932c9e...` 的 raw 文件 `cat -A` |
+| `fs/exec.c:1544` / `fs/stat.c:297` / `kernel/reboot.c:288` 都是各自函数的第一条语句 | 同一 commit 的四个文件 |
+| 官网 4.14 及以下版本的 faccessat 补丁，正是插在 `if (mode & ~S_IRWXO)` 之前 | sukisu.org 集成指南原文 |
+| builtin HEAD `1cfa573` 的 `feature/sucompat.h` 非 SUSFS 分支三个签名 | GitHub API 取全文 |
+| `ksu_handle_sys_reboot` 在 `supercall/supercall.c:137`（非 SUSFS）与 `supercall/dispatch.c:419`（SUSFS），且 `ksu_main.c:105` 无条件 include `supercall.c` | builtin 分支全量 tarball |
+| `builtin/kernel/Kconfig` 与 Makefile 全文都没有 `KSU_TAMPER_SYSCALL_TABLE` / `KSU_HACK_ARM64_BRANCH_LINK` / `KSU_KPROBES_KSUD` | 同上 |
+
+最后一行也说明：官网那段"开个 config 就能跳过全部手工 hook"在这条
+分支上不成立，手工 hook 躲不掉。
+
+#### 改了什么
+
+- 锚点改成**前缀匹配**，每个位置可以列多个候选，取最早命中的那条；
+  找不到时把函数真实源码带行号打进日志，下一轮不用再来回复制。
+- 加 C89 声明顺序自检：从函数 `{` 到插入点之间若出现语句，直接
+  `[FAIL]`，不再悄悄插出一段编不过的代码。
+- 补 `kernel/reboot.c` 的第四个 hook（5.5 里被我误删的），调用
+  `ksu_handle_sys_reboot`。`selfcheck` 相应改成 4 个位置。
+- `build.yml` 的 prepare 也 `tee prepare.log`；失败时 `prepare.log` 和
+  `build.log` 一起进 Summary 和 artifact。之前 prepare 挂掉时连日志
+  文件都没生成，只能靠你手动复制。
+
+#### 本地实测（真源码，不是模拟）
+
+把 `build.sh` 里的 Python 段原样抽出来，对四个**从 GitHub 拉下来的真实
+4.4 文件**跑：
+
+```
+===== RUN 1 =====
+  hooked: fs/exec.c (before 'if (IS_ERR(filename))')
+  hooked: fs/open.c (before 'if (mode & ~S_IRWXO)')
+  hooked: fs/stat.c (before 'error = vfs_fstatat(dfd, filename, &stat, flag);')
+  hooked: kernel/reboot.c (before 'if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))')
+===== RUN 2 (idempotency) =====
+  already hooked: fs/exec.c
+  already hooked: fs/open.c
+  already hooked: fs/stat.c
+  already hooked: kernel/reboot.c
+```
+
+插完的位置逐字查过：`fs/open.c` 的 hook 落在 `unsigned int lookup_flags`
+之后、`if (mode & ~S_IRWXO)` 之前；`kernel/reboot.c` 的落在 `int ret = 0`
+和注释之后、`if (!ns_capable(...))` 之前。**这验证的是补丁逻辑，不是
+C 代码能编过**——本机仍没有 Linux 内核工具链。
+
 #### 下一轮
 
 ```powershell
 git add -A
-git commit -m "feat: auto-insert builtin manual hooks, skip builtin compat injection"
+git commit -m "fix: prefix-match hook anchors, add reboot hook, log prepare"
 git push
 ```
 
 Actions → `Run workflow` → `Use workflow from` 选 `main`，
-`SukiSU-Ultra branch` 选 `builtin`（现在是默认值）。prepare 阶段应该出现
-`hooked: fs/exec.c` / `fs/open.c` / `fs/stat.c` 三行，自检多一行
-`OK  manual hooks present (3 sites)`，然后才进 `Compile kernel`。
-
-缓存已保存，这轮 prepare 约 20 秒，编译 5 分钟左右。若编译再红，
-Summary 会列出 `error:` 行，复制给我。
-
-**没验证的**：三处 hook 调用、自带 `kernel_compat.h` 在 4.4 上能否编过、
-以及链接期符号是否齐全，全部只在 Run #4 见分晓。本机没有 Linux 内核
-工具链，Bash 沙箱无外网，本地只验过 Python 补丁逻辑和 `bash -n`。
+`SukiSU-Ultra branch` 选 `builtin`。prepare 应该出现 4 行 `hooked:` 和
+`OK  manual hooks present (4 sites)`，然后才进 `Compile kernel`。
+缓存还在，prepare 约 20 秒。**第一次真正编译 C 代码仍在这一轮**；
+若 `Compile kernel` 红了，Summary 会先列 `error:` 行，贴给我。
 
 ---
 
 ## 6. 边界，说清楚
 
-- 2026-11-08 跑过三轮：`prepare` 与缓存三轮都成功。**端到端编译尚未成功**。
-  Run #1 卡在 `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在
-  `TWA_RESUME` 与 `kernel_read/write` 签名（5.3），两次 `Compile kernel`
-  都是 exit code 2。Run #3 选了 `builtin`，在 prepare 自检被拦下，
-  `Compile kernel` 是 skipped（5.5）。
-- 脚本在 Windows 主机上写，本机 Bash 沙箱无外网（`curl` HTTP 000），也没有
-  Linux 内核工具链。所有 URL、哈希、defconfig 名、构建命令、AK3 属性都从
-  上游 raw 文件核实。**生成的 C 兼容垫片、自动插入的三处 hook 调用、
-  `builtin` 自带 compat 层在 4.4 上的表现，全都没有在真实树上编译过**，
-  Run #4 才是它们的第一次验证。
+- 到 2026-11-09 跑过四轮，**端到端编译一次都没成功过**。Run #1 卡在
+  `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME`
+  与 `kernel_read/write` 签名（5.3），两次 `Compile kernel` 都是 exit 2；
+  Run #3 在 prepare 自检被拦下（5.5），Run #4 在 prepare 的 hook 插入
+  被拦下（5.6），两次 `Compile kernel` 都是 skipped。换句话说：
+  `builtin` 的 C 代码到现在连编译器都没见到。
+- 脚本在 Windows 主机上写。这一轮 Bash 沙箱能连 GitHub（raw 主机偶发
+  TLS 失败，API 可用），所以四个 hook 锚点、hook 签名、Kconfig 选项
+  都是抓真实上游文件核过的；但**仍然没有 Linux 内核工具链**。
+  C 兼容垫片、四处 hook 调用、`builtin` 自带 compat 层在 4.4 上的表现，
+  全都没在真实树上编译过。能抓源码 ≠ 能编译。
 - 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、
   Makefile 匹配、defconfig 去重追加、兼容补丁单测（注入位置、相对路径、
-  幂等性、无关文件不变、builtin 分支跳过注入）、hook 插入单测（三处锚点
-  命中、插在声明之后锚点之前、幂等、锚点缺失时明确报错）、交付文件全是
-  LF 换行。没做 YAML 解析器级语法检查（本机无 PyYAML）。
-- `SUKISU_REF=builtin` 现在是默认分支，3 处 hook 由脚本按 4.4 源码锚点
+  幂等性、无关文件不变、builtin 分支跳过注入）、hook 插入**对四个真实
+  4.4 源文件**的实测（锚点命中、插在声明之后/语句之前、幂等、锚点
+  缺失时打印真实源码并报错）、交付文件全是 LF 换行。没做 YAML 解析器级
+  语法检查（本机无 PyYAML）。
+- `SUKISU_REF=builtin` 现在是默认分支，4 处 hook 由脚本按 4.4 源码锚点
   自动插入，不用你改 C 代码。它带完整 4.4 兼容层（5.4）；代价是这些
   hook 的 C 代码尚未编译验证。`main` 已在 Run #1 证伪，`old` 已证伪
   "最老即最兼容"的假设。
+- 5.5 里关于 `ksu_handle_sys_reboot` 不存在的结论是错的，5.6 已纠正。
+  官网引用的 `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 等选项不属于这条分支，
+  手工 hook 没有捷径。
+- 官网还提到 `sys_fstatat64` 的 hook："Optionally hook sys_fstatat64 if
+  32-bit su is needed"。我们没加。若 Manager 或 su 走 32 位路径才发现
+  缺它，那时再补第五个 hook；现在不为了"可能用得上"预先改代码。
 - 刷机有变砖风险。备份 `boot.img` 是唯一的一步回滚，别跳过。

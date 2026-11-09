@@ -250,51 +250,88 @@ apply_manual_hooks() {
   # builtin registers no kprobes: these calls ARE the driver's entry points.
   # Without them the kernel would link fine but SukiSU would never fire.
   #
-  # Every anchor below was read verbatim from the lineage-22.2 tree:
-  #   fs/exec.c  do_execveat_common()      -> "if (IS_ERR(filename))"
-  #   fs/open.c  SYSCALL_DEFINE3(faccessat) -> "if (mode & ~S_IRWXO)"
-  #   fs/stat.c  SYSCALL_DEFINE4(newfstatat)-> "error = vfs_fstatat(...)"
-  # Every extern signature matches the non-SUSFS branch of
-  # builtin/kernel/feature/sucompat.c, which defines all three symbols.
+  # Verified against the pinned lineage-22.2 tree (commit 9932c9e...) and
+  # against builtin HEAD 1cfa573: see README 5.6 for the raw line numbers.
+  # All four extern signatures match the non-SUSFS branch used by our
+  # defconfig (CONFIG_KSU_SUSFS is not set).
   #
-  # The official guide's reboot hook is deliberately omitted:
-  # ksu_handle_sys_reboot has no definition in builtin/kernel/runtime/ksud.c,
-  # so inserting it would fail at link time. The sys_newfstat ret_hook is
-  # Android 16+ only; this target is Android 15.
+  # Run #4 lesson: fs/open.c's first statement is
+  #     if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
+  # The old code compared the full stripped line with ==, so the trailing
+  # comment made the anchor miss. Anchors are now matched by prefix, tried
+  # in order, and a miss dumps the real source instead of dying silently.
   python3 - "$KDIR" <<'PY'
 import os, sys
 
 KDIR = sys.argv[1]
 MARK = "dumpling-sukisu: manual hook"
 
+# (file, function anchors, insert anchors, hook body)
+# Several candidates per site: a future backport may rename one line without
+# changing the others. The earliest matching line wins.
 SITES = [
     ("fs/exec.c",
-     "static int do_execveat_common(",
-     "if (IS_ERR(filename))",
+     ["static int do_execveat_common("],
+     ["if (IS_ERR(filename))"],
      ["#ifdef CONFIG_KSU",
       "/* " + MARK + " (4.4.302 / non-GKI) */",
       "extern int ksu_handle_execveat(int *, struct filename **, void *, void *, int *);",
       "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);",
       "#endif"]),
     ("fs/open.c",
-     "SYSCALL_DEFINE3(faccessat,",
-     "if (mode & ~S_IRWXO)",
+     ["SYSCALL_DEFINE3(faccessat,"],
+     ["if (mode & ~S_IRWXO)", "override_cred = prepare_creds();"],
      ["#ifdef CONFIG_KSU",
       "/* " + MARK + " (4.4.302 / non-GKI) */",
       "extern int ksu_handle_faccessat(int *, const char __user **, int *, int *);",
       "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);",
       "#endif"]),
     ("fs/stat.c",
-     "SYSCALL_DEFINE4(newfstatat,",
-     "error = vfs_fstatat(dfd, filename, &stat, flag);",
+     ["SYSCALL_DEFINE4(newfstatat,"],
+     ["error = vfs_fstatat(dfd, filename, &stat, flag);"],
      ["#ifdef CONFIG_KSU",
       "/* " + MARK + " (4.4.302 / non-GKI) */",
       "extern int ksu_handle_stat(int *, const char __user **, int *);",
       "ksu_handle_stat(&dfd, &filename, &flag);",
       "#endif"]),
+    ("kernel/reboot.c",
+     ["SYSCALL_DEFINE4(reboot,"],
+     ["if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))"],
+     ["#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)",
+      "/* " + MARK + " (4.4.302 / non-GKI) */",
+      "extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);",
+      "ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);",
+      "#endif"]),
 ]
 
-for rel, start, before, body in SITES:
+# 4.4 is C89-style: a statement inserted before local declarations fails to
+# compile. A hook may therefore only be placed at the first statement of the
+# function, so everything between "{" and the anchor must be a declaration,
+# a comment, a preprocessor line or blank.
+DECL_STARTS = ("const ", "struct ", "union ", "enum ", "unsigned ", "signed ",
+               "int ", "long ", "short ", "char ", "void ", "bool ", "static ",
+               "extern ", "loff_t ", "size_t ", "ssize_t ", "u8 ", "u16 ",
+               "u32 ", "u64 ", "s32 ", "s64 ", "atomic_t ")
+
+
+def decl_or_ignorable(s):
+    s = s.strip()
+    if not s or s.startswith(("/*", "*", "//", "#")):
+        return True
+    if s.startswith(DECL_STARTS):
+        return True
+    # continuation line of a multi-line declaration
+    return not s.endswith((";", "{", "}")) and "(" not in s
+
+
+def dump_source(rel, lines, si, count=40):
+    print("  --- %s: real source starting at line %d ---" % (rel, si + 1))
+    for j in range(si, min(si + count, len(lines))):
+        print("  %5d| %s" % (j + 1, lines[j].rstrip("\n")))
+    print("  --- end of dump ---")
+
+
+for rel, starts, anchors, body in SITES:
     p = os.path.join(KDIR, rel)
     if not os.path.isfile(p):
         sys.exit("  [FAIL] %s: file not found" % rel)
@@ -303,20 +340,42 @@ for rel, start, before, body in SITES:
     if any(MARK in l for l in lines):
         print("  already hooked: %s" % rel)
         continue
-    si = next((i for i, l in enumerate(lines) if start in l), None)
+
+    si = next((i for i, l in enumerate(lines) if any(s in l for s in starts)), None)
     if si is None:
-        sys.exit("  [FAIL] %s: function anchor %r not found" % (rel, start))
-    bi = next((i for i in range(si, min(si + 60, len(lines)))
-               if lines[i].strip() == before), None)
+        sys.exit("  [FAIL] %s: no function anchor in %r" % (rel, starts))
+    brace = next((i for i in range(si, min(si + 12, len(lines)))
+                  if lines[i].strip() == "{"), None)
+    if brace is None:
+        dump_source(rel, lines, si)
+        sys.exit("  [FAIL] %s: opening brace not found after function anchor" % rel)
+
+    bi, matched = None, None
+    for i in range(brace + 1, min(si + 80, len(lines))):
+        for a in anchors:
+            if lines[i].strip().startswith(a):
+                bi, matched = i, a
+                break
+        if bi is not None:
+            break
     if bi is None:
-        sys.exit("  [FAIL] %s: insert anchor %r not found within 60 lines of %r"
-                 % (rel, before, start))
+        dump_source(rel, lines, si)
+        sys.exit("  [FAIL] %s: no insert anchor from %r within 80 lines"
+                 % (rel, anchors))
+
+    for j in range(brace + 1, bi):
+        if not decl_or_ignorable(lines[j]):
+            dump_source(rel, lines, si)
+            sys.exit("  [FAIL] %s: line %d is a statement, hook would land after "
+                     "it and break C89 declaration order: %s"
+                     % (rel, j + 1, lines[j].strip()))
+
     indent = lines[bi][:len(lines[bi]) - len(lines[bi].lstrip())]
     block = [(l + "\n") if l.startswith("#") else (indent + l + "\n") for l in body]
     lines[bi:bi] = block
     with open(p, "w", encoding="utf-8", newline="") as f:
         f.writelines(lines)
-    print("  hooked: %s (before %r)" % (rel, before))
+    print("  hooked: %s (before %r)" % (rel, matched))
 PY
 }
 
@@ -403,12 +462,12 @@ selfcheck() {
     # a count of 3 could be satisfied by unrelated kernel code and let a
     # hook-less kernel through to a build that can never grant root.
     local missing=0
-    for f in fs/exec.c fs/open.c fs/stat.c; do
+    for f in fs/exec.c fs/open.c fs/stat.c kernel/reboot.c; do
       grep -q 'dumpling-sukisu: manual hook' "$KDIR/$f" 2>/dev/null \
         || { echo "  MISSING manual hook in $f"; missing=1; }
     done
     if [ "$missing" -eq 0 ]; then
-      echo "  OK  manual hooks present (3 sites)"
+      echo "  OK  manual hooks present (4 sites)"
     else
       echo "  Run: ./build.sh hooks  to preview the real 4.4 hook sites."
       ok=0
