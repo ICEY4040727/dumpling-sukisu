@@ -641,7 +641,7 @@ Bash 沙箱这轮能连 GitHub 了（raw 主机偶发 TLS 失败，改用
 和注释之后、`if (!ns_capable(...))` 之前。**这验证的是补丁逻辑，不是
 C 代码能编过**——本机仍没有 Linux 内核工具链。
 
-#### 下一轮
+#### 那一轮的指令（已执行，结果见 5.8）
 
 ```powershell
 git add -A
@@ -652,19 +652,170 @@ git push
 Actions → `Run workflow` → `Use workflow from` 选 `main`，
 `SukiSU-Ultra branch` 选 `builtin`。prepare 应该出现 4 行 `hooked:` 和
 `OK  manual hooks present (4 sites)`，然后才进 `Compile kernel`。
-缓存还在，prepare 约 20 秒。**第一次真正编译 C 代码仍在这一轮**；
-若 `Compile kernel` 红了，Summary 会先列 `error:` 行，贴给我。
+缓存还在，prepare 约 20 秒。**第一次真正编译 C 代码是在这一轮**：
+4 处 hook 顺利进了编译，编译器随后停在 `linux/static_call.h`（5.8）。
+Summary 先列 `error:` 行，你贴过来的带行号日志就是它。
+
+---
+
+### 5.7 Summary 凭什么"先列 error 行"
+
+这件事不是 GitHub 的开关，是往一个文件里按顺序写 Markdown。
+
+GitHub 给每个 step 注入一个环境变量 `GITHUB_STEP_SUMMARY`，值是一个临时
+文件的绝对路径（形如 `/home/runner/work/_temp/_runner_file_commands/
+step_summary_<uuid>`）。`>> "$GITHUB_STEP_SUMMARY"` 就是往它**追加**；
+job 结束时 GitHub 按**步骤顺序**把各步骤的文件拼成 Summary 页。所以
+"谁在上面"只由两件事决定：
+
+1. 哪个步骤第一个写。本 workflow 只有 `Show error lines and log tails
+   in job summary` 这一步写 Summary，它必然排在最前面。
+2. 同一步骤内部先写什么。这一步跑**两趟**：第一趟遍历两个日志只写
+   error 块，第二趟才写所有 tail。
+
+第二点是实测逼出来的。第一版写的是单个循环，每个日志按
+"error 块 → tail" 的顺序各写一遍。本地模拟"prepare 成功、compile 失败"
+时，Summary 顶部长这样：
+
+```
+## prepare.log - error lines
+(no line matched ...)
+## prepare.log - last 100 lines
+...
+## build.log - error lines      <- 真正的编译错误被挤到下面
+```
+
+prepare 成功也会生成 `prepare.log`，于是它那个空错误块和 100 行 tail
+反而排在编译错误前面。改成两趟后，第一趟跳过没有匹配的文件
+（`[ -n "$errs" ] || continue`），只有含错误的日志会先写；两份都没匹配
+时补一行说明。这样无论挂在哪一步，最顶部一定是第一份含错误的日志。
+
+`grep` 的结果存进变量还有一个好处：一条都没匹配上时不会留下空代码块，
+看起来像"日志没抓到"。另外 `prepare.log` / `build.log` 必须先由前面两步
+`2>&1 | tee` 落盘，没有 `tee` 就无文件可 grep——Run #1/2 只能靠你手动
+复制日志就是这个原因。
+
+**前四次 run 看不到这个效果**：`build.yml` 本身也是仓库文件，
+`workflow_dispatch` 把整次运行钉在点击那一刻的 HEAD。旧 run 跑的是
+克隆时的旧 workflow，push 之后再点 `Run workflow` 才生效。
+
+Summary 也不在 job 日志页。点运行页左侧菜单的 **Summary**（URL 末尾
+没有 `/job/...`），往下滚才是这两个代码块。想 30 秒自测，可以在任意
+步骤临时加一行，跑一次看它出现：
+
+```yaml
+- run: echo '## smoke test: summary works' >> "$GITHUB_STEP_SUMMARY"
+```
+
+---
+
+### 5.8 Run #5：编译器终于见到 C 代码，停在 5.10 的头文件上
+
+这一轮 `Compile kernel` 真的启动了。日志末尾那四行 `Error 2` 不是四个
+错误：最内层 `drivers/kernelsu/ksu_main.o` 编译失败，make 沿
+`drivers/kernelsu` → `drivers` → 顶层 Makefile 逐级往上冒泡，同一个
+退出码被打印了四次。看第一个 `error:` 就行。
+
+```
+drivers/kernelsu/kernel_includes.h:76:10: fatal error: 'linux/static_call.h' file not found
+```
+
+`kernel_includes.h` 前 75 个 include 全都解析成功了，第 76 行炸。
+`static_call` 是 5.10 才进主线的静态调用优化，4.4 树里连这个文件都
+没有。同一个文件的第 85 行就写着
+`#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)`，第 125 行把
+`compiler_types.h` 门控在 `>= 4.14`，第 133 / 138 行把 `sched/*.h` 门控在
+`>= 4.11` / `>= 4.10`。作者把版本边界标得很清楚，唯独第 76 行漏在
+门控外面，写成无条件包含。
+
+#### 为什么不是补一行就完事
+
+把固定的 4.4 树（`9932c9e...`，57109 个 blob）和 `builtin` HEAD
+`1cfa573` 引用的 333 个不同系统头交叉对了一遍，得到 16 个"树里找不到
+同名文件"的头。分成三类：
+
+| 类别 | 例子 | 会炸吗 |
+|---|---|---|
+| 在 `#if` 门控内，4.4 不展开 | `crypto/sha2.h` (>=5.11)、`linux/hex.h` (>=6.4)、`compiler_types.h` (>=4.14)、`sched/task.h` (>=4.10)、`susfs.h` (`CONFIG_KSU_SUSFS`)、`uapi/linux/mount.h` (>=5.0) | 不会 |
+| 构建期生成 / uapi 别名 | `generated/compile.h`、`generated/utsrelease.h`、`linux/version.h`、`linux/ioctl.h` | 不会。编译日志第 8、9、72、35 行都过了，编译器找得到它们 |
+| **无条件 + 4.4 确实没有** | `linux/static_call.h` (`kernel_includes.h:76`)、`linux/sched/signal.h` (`infra/symbol_resolver.c:5`)、`linux/set_memory.h` (`kpm/compact.c:23`、`kpm/super_access.c:23`) | **会，共 4 行** |
+
+第二类最容易被静态扫描误判：git 树里没有 `include/linux/version.h`，
+但 Kbuild 会在构建目录生成它；`linux/ioctl.h` 实际落在
+`include/uapi/linux/ioctl.h`，而 uapi 目录也在内核的头文件搜索路径里。
+所以判断能不能编，不能只比对源码树的文件名——编译日志本身是更硬的
+证据。
+
+第三类为什么躲不掉：`kernel/Makefile` 只有 `ksu-y := ksu_main.o`，
+`ksu_main.c` 用 `#include "xxx.c"` 把 40 个 `.c` 拼成**一个翻译单元**
+（unity build）。上面四个文件都在这个单元里，任何一行的 include 缺失
+都会让整个 `ksu.o` 编不过。修掉 `static_call.h`，下一个 fatal 几乎必然
+是 `sched/signal.h`。
+
+#### 注释掉是安全的，依据不是猜
+
+全分支 grep 的结果：没有一处调用 `static_call()`，没有一处调用
+`set_memory_*()`，`symbol_resolver.c` 也没用 `sched/signal.h` 才有的类型。
+这四行是新版内核的习惯性包含，在 4.4 上是纯噪音。而且
+`kernel_includes.h` 已经包含 `<linux/sched.h>`，4.4 的 `signal_struct`
+就在那里面。`kernel_includes.h:139` 那个 `<linux/sched/signal.h>` 本身
+也包在 `#if >= 4.10` 里——门控正是上游自己的写法。
+
+`build.sh` 新增 `apply_header_gates()`，把这 4 行换成带 marker 的注释，
+不去猜一个没核实过的 `KERNEL_VERSION` 阈值。同一个函数里加了
+**preflight**：从 `ksu_main.c` 提取 unity 单元，跟踪 `#if` 深度，只对
+未被门控的系统头在真实 `KDIR` 里查存在性（含 uapi、arch、generated
+搜索路径，生成头走白名单），把找不到的打成 `WARN`。它只诊断、不 fail
+——误报不能挡住一轮 5 分钟的编译。
+
+`selfcheck` 相应改成按「文件 + 头」精确检查。这里有个实测踩到的坑：
+整文件 grep `sched/signal.h` 会命中 `kernel_includes.h:139` 那行**被
+4.10 门控保护**的 include，把合法源码判成失败；按对查就没事。
+
+#### 本地实测（真源码 + 真 4.4 文件清单）
+
+| 场景 | 结果 |
+|---|---|
+| RUN 1 | 4 行 `gated:`，每个文件 `+3 -1`，无其它改动 |
+| RUN 2 | 4 行 `already gated:`，幂等 |
+| preflight | 54 个未门控系统头，`OK no ungated header gaps left` |
+| marker 在但原 include 又活了 | `[FAIL] ... still live`，exit 1 |
+| 上游自行删掉了目标行 | `WARN ... upstream may have fixed it`，继续 |
+| selfcheck 三态 | 未修补报 4 条 / 已修补 `ok=1` / 混合只报没补的那一条 |
+
+`bash -n`、4 个内嵌 Python 块语法、全 LF、`git diff --check` 都过。
+
+#### 下一轮，以及止损线
+
+```powershell
+git add -A
+git commit -m "fix: gate 5.x-only headers for 4.4, add header preflight"
+git push
+```
+
+Actions → `Run workflow` → `Use workflow from` 选 `main`，分支 `builtin`。
+prepare 应先出 4 行 `gated:` 和 `OK no ungated header gaps left`，再进
+`Compile kernel`。
+
+**该说清楚的话**：这是第五轮，也是 `builtin` 的 C 代码第一次被编译。
+撞上的是 5.10 设施，不是脚本 bug。后面还有一整片没验证过的 5.x API
+——`kernel_compat.h` 的垫片、selinux state、KPM、preinit runner。
+如果下一轮继续成片冒 5.x 的结构体或符号，逐条打补丁就不是好投入了，
+换路线更诚实：回到当年为 4.4 non-GKI 写的老 KernelSU 集成，或
+`Seshiria/op5dc` 里那份 LineageOS 21 内核包。但后者**只有出包证据，
+没有这台设备上的开机验证**，别把它当成已经验证过的退路。
 
 ---
 
 ## 6. 边界，说清楚
 
-- 到 2026-11-09 跑过四轮，**端到端编译一次都没成功过**。Run #1 卡在
+- 到 2026-11-09 跑过五轮，**端到端编译一次都没成功过**。Run #1 卡在
   `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME`
   与 `kernel_read/write` 签名（5.3），两次 `Compile kernel` 都是 exit 2；
   Run #3 在 prepare 自检被拦下（5.5），Run #4 在 prepare 的 hook 插入
-  被拦下（5.6），两次 `Compile kernel` 都是 skipped。换句话说：
-  `builtin` 的 C 代码到现在连编译器都没见到。
+  被拦下（5.6），这两次 `Compile kernel` 是 skipped。Run #5 终于让
+  `builtin` 的 C 代码进了编译器，停在 `linux/static_call.h`（5.8）。
+  换句话说：前四轮连编译器都没见到，第五轮见到了、没编过。
 - 脚本在 Windows 主机上写。这一轮 Bash 沙箱能连 GitHub（raw 主机偶发
   TLS 失败，API 可用），所以四个 hook 锚点、hook 签名、Kconfig 选项
   都是抓真实上游文件核过的；但**仍然没有 Linux 内核工具链**。
@@ -674,12 +825,17 @@ Actions → `Run workflow` → `Use workflow from` 选 `main`，
   Makefile 匹配、defconfig 去重追加、兼容补丁单测（注入位置、相对路径、
   幂等性、无关文件不变、builtin 分支跳过注入）、hook 插入**对四个真实
   4.4 源文件**的实测（锚点命中、插在声明之后/语句之前、幂等、锚点
-  缺失时打印真实源码并报错）、交付文件全是 LF 换行。没做 YAML 解析器级
+  缺失时打印真实源码并报错）、头文件门控**对真实 builtin 源码 +
+  真实 4.4 文件清单**的实测（只改 4 行、幂等、preflight 零 WARN、
+  失败路径与 selfcheck 三态）、交付文件全是 LF 换行。没做 YAML 解析器级
   语法检查（本机无 PyYAML）。
-- `SUKISU_REF=builtin` 现在是默认分支，4 处 hook 由脚本按 4.4 源码锚点
-  自动插入，不用你改 C 代码。它带完整 4.4 兼容层（5.4）；代价是这些
-  hook 的 C 代码尚未编译验证。`main` 已在 Run #1 证伪，`old` 已证伪
-  "最老即最兼容"的假设。
+- `SUKISU_REF=builtin` 现在是默认分支：4 处 hook 按 4.4 源码锚点自动
+  插入，4 行 5.x-only 头被门控，不用你改 C 代码。它带完整 4.4 兼容层
+  （5.4）；代价是这些 hook 与垫片在真实树上仍一次都没编过。`main` 已在
+  Run #1 证伪，`old` 已证伪"最老即最兼容"的假设。
+- **止损线**：Run #6 若继续成片冒 5.x 结构体/符号，就停手换路线，不再
+  逐条打补丁（5.8）。老 KernelSU 包只有出包证据、没有本机开机验证，
+  换之前要重新核实，不能当现成退路。
 - 5.5 里关于 `ksu_handle_sys_reboot` 不存在的结论是错的，5.6 已纠正。
   官网引用的 `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 等选项不属于这条分支，
   手工 hook 没有捷径。

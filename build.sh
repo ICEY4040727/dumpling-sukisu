@@ -243,6 +243,134 @@ PY
   echo "  fix them one round at a time (see README section 5)."
 }
 
+apply_header_gates() {
+  log "Gating headers that do not exist in the 4.4 tree"
+
+  # Run #5: compiling builtin on 4.4 died at kernel_includes.h:76 with
+  #   fatal error: 'linux/static_call.h' file not found
+  # The other 75 includes in that file all resolved, which rules out the
+  # whole "uapi aliases / generated headers" family of false positives.
+  #
+  # Evidence, pinned commit 9932c9e... (57109 blobs) vs builtin HEAD 1cfa573:
+  #   linux/static_call.h        absent, unconditional, kernel_includes.h:76
+  #   linux/sched/signal.h       absent, unconditional, infra/symbol_resolver.c:5
+  #   linux/set_memory.h         absent, unconditional, kpm/compact.c:23
+  #                                                     kpm/super_access.c:23
+  # All four .c/.h files are in ksu_main.c's unity translation unit. None of
+  # them use a single symbol from those headers (grep over the full branch:
+  # no static_call(), no set_memory_*(), no sched/signal-only type). The
+  # upstream file already gates the same sched/*.h headers behind >= 4.10,
+  # and compiler_types.h behind >= 4.14, so gating is the author's own idiom.
+  #
+  # We comment the four lines out rather than inventing a KERNEL_VERSION
+  # threshold we cannot verify. This build script targets 4.4 only.
+  python3 - "$KDIR" "$KDIR/KernelSU/kernel" <<'PY'
+import os, re, sys
+
+KDIR, KSU = sys.argv[1], sys.argv[2]
+MARK = "dumpling-sukisu: 4.4 header gate"
+
+# The workflow still exposes old / main / builtin-new as inputs. Those trees
+# do not all have this layout; do not fail an unrelated branch on a missing
+# file. If kernel_includes.h exists, the four gate targets must exist too.
+if not os.path.isfile(os.path.join(KSU, "kernel_includes.h")):
+    print("  no kernel_includes.h on this branch; header gates skipped")
+    sys.exit(0)
+
+GATES = [
+    ("kernel_includes.h", "#include <linux/static_call.h>",
+     "static_call is 5.10+; builtin never calls static_call()"),
+    ("infra/symbol_resolver.c", "#include <linux/sched/signal.h>",
+     "sched/signal.h is 4.10+; kernel_includes.h already gates it there"),
+    ("extension/kpm/compact.c", "#include <linux/set_memory.h>",
+     "linux/set_memory.h is absent on 4.4; no set_memory_* symbol used"),
+    ("extension/kpm/super_access.c", "#include <linux/set_memory.h>",
+     "linux/set_memory.h is absent on 4.4; no set_memory_* symbol used"),
+]
+
+for rel, inc, why in GATES:
+    p = os.path.join(KSU, rel)
+    if not os.path.isfile(p):
+        sys.exit("  [FAIL] %s: file not found" % rel)
+    with open(p, encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines(True)
+    hits = [i for i, l in enumerate(lines) if l.strip() == inc]
+    if any(MARK in l for l in lines):
+        if hits:
+            sys.exit("  [FAIL] %s: marker present but %s still live" % (rel, inc))
+        print("  already gated: %s" % rel)
+        continue
+    if not hits:
+        print("  WARN  %s: %s not found (upstream may have fixed it)" % (rel, inc))
+        continue
+    i = hits[0]
+    lines[i:i + 1] = [
+        "/* %s (%s) */\n" % (MARK, rel),
+        "/* %s */\n" % why,
+        "/* 4.4: %s */\n" % inc,
+    ]
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.writelines(lines)
+    print("  gated: %s (%s)" % (rel, inc))
+
+# ---- Preflight -----------------------------------------------------------
+# Purely diagnostic. Walk the unity translation unit and report any UNGATED
+# system #include that the pinned 4.4 tree cannot resolve. Generated headers
+# are whitelisted; uapi/ and arch/ search paths are included. A false positive
+# must never abort prepare -- it only saves us a 5-minute compile round.
+GENERATED = {"generated/compile.h", "generated/utsrelease.h", "linux/version.h"}
+PREFIXES = ("linux/", "uapi/", "asm/", "generated/", "crypto/",
+            "net/", "security/", "trace/")
+
+def resolvable(inc):
+    cands = [
+        "include/" + inc,
+        "include/uapi/" + inc,
+        "include/generated/" + inc,
+        "include/generated/uapi/" + inc,
+        "arch/arm64/include/" + inc,
+        "arch/arm64/include/uapi/" + inc,
+        "arch/arm64/include/generated/" + inc,
+        "arch/arm64/include/generated/uapi/" + inc,
+    ]
+    return any(os.path.isfile(os.path.join(KDIR, c)) for c in cands)
+
+def scan(path):
+    """Yield (include, line-no, guarded?) for system includes in one file."""
+    if not os.path.isfile(path):
+        return
+    depth = 0
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for n, raw in enumerate(f, 1):
+            s = raw.strip()
+            if re.match(r"#\s*(ifdef|ifndef|if)\b", s):
+                depth += 1
+            elif re.match(r"#\s*endif\b", s):
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                m = re.match(r'#include\s*[<"]([^>"]+)[>"]', s)
+                if m and m.group(1).startswith(PREFIXES):
+                    yield m.group(1), n, False
+
+main = os.path.join(KSU, "ksu_main.c")
+units = ["kernel_includes.h", "kernel_compat.h"]
+if os.path.isfile(main):
+    units += [p for p in re.findall(r'#include\s*"([^"]+\.c)"',
+              open(main, encoding="utf-8", errors="replace").read())]
+seen, gaps = set(), []
+for rel in units:
+    for inc, n, _ in scan(os.path.join(KSU, rel)):
+        seen.add(inc)
+        if inc not in GENERATED and not resolvable(inc):
+            gaps.append("%s (%s:%d)" % (inc, rel, n))
+print("  preflight: %d distinct ungated system includes in unity TU" % len(seen))
+for g in sorted(set(gaps)):
+    print("  WARN  unresolvable on 4.4: %s" % g)
+if not gaps:
+    print("  OK  no ungated header gaps left")
+PY
+}
+
 apply_manual_hooks() {
   [ "$SUKISU_REF" = "builtin" ] || return 0
   log "Inserting manual hooks for SUKISU_REF=builtin into the 4.4 tree"
@@ -457,6 +585,24 @@ selfcheck() {
   grep -q '^CONFIG_KSU=y' "$KDIR/arch/arm64/configs/$DEFCONFIG" && echo "  OK  CONFIG_KSU=y" || { echo "  MISSING CONFIG_KSU"; ok=0; }
   grep -q '^CONFIG_KPROBES=y' "$KDIR/arch/arm64/configs/$DEFCONFIG" && echo "  OK  CONFIG_KPROBES=y" || { echo "  MISSING CONFIG_KPROBES"; ok=0; }
 
+  # These headers do not exist in the pinned 4.4 tree. A live #include here
+  # means apply_header_gates() did not run (or was reverted by a re-clone).
+  # Check the EXACT file/header pair: kernel_includes.h also contains a
+  # perfectly safe <linux/sched/signal.h> inside "#if >= 4.10", which 4.4
+  # never expands. A file-wide grep would flag it and block a valid build.
+  while read -r f hdr; do
+    p="$KDIR/KernelSU/kernel/$f"
+    [ -f "$p" ] || continue
+    if grep -qE "^[[:space:]]*#include[[:space:]]*<${hdr}>" "$p"; then
+      echo "  MISSING 4.4 header gate in $f ($hdr)"; ok=0
+    fi
+  done <<'GATES'
+kernel_includes.h linux/static_call.h
+infra/symbol_resolver.c linux/sched/signal.h
+extension/kpm/compact.c linux/set_memory.h
+extension/kpm/super_access.c linux/set_memory.h
+GATES
+
   if [ "$SUKISU_REF" = "builtin" ]; then
     # Check the exact injected marker in each expected file, not a file count:
     # a count of 3 could be satisfied by unrelated kernel code and let a
@@ -516,11 +662,11 @@ pack_ak3() {
 }
 
 case "$STAGE" in
-  prepare) download_all; integrate_sukisu; apply_compat_patches; apply_manual_hooks; configure_defconfig; selfcheck ;;
+  prepare) download_all; integrate_sukisu; apply_compat_patches; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck ;;
   hooks)   [ -d "$KDIR" ] || die "run ./build.sh prepare first"; show_hooks ;;
   build)   [ -f "$KDIR/arch/arm64/configs/$DEFCONFIG" ] || die "run ./build.sh prepare first"; selfcheck; compile_kernel ;;
   pack)    pack_ak3 ;;
-  all)     download_all; integrate_sukisu; apply_compat_patches; apply_manual_hooks; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
+  all)     download_all; integrate_sukisu; apply_compat_patches; apply_header_gates; apply_manual_hooks; configure_defconfig; selfcheck; compile_kernel; pack_ak3 ;;
   clean)   rm -rf "$WORK"; echo "removed $WORK" ;;
   *)       die "unknown stage '$STAGE' (use prepare|hooks|build|pack|all|clean)" ;;
 esac

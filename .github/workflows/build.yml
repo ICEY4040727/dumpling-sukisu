@@ -80,18 +80,40 @@ jobs:
       - name: Show error lines and log tails in job summary
         if: failure()
         run: |
+          # $GITHUB_STEP_SUMMARY is an append-only Markdown file, so write
+          # order is display order. Two passes: ALL error blocks first, tails
+          # after. A single per-file loop would put a successful prepare.log's
+          # "no errors" block above the real compile errors.
+          found=0
           for f in prepare.log build.log; do
             [ -f "$f" ] || continue
+            errs=$(grep -nE '\[FAIL\]|MISSING|error:|fatal error:|Error [0-9]|undefined reference|No such file' "$f" | head -n 80) || true
+            [ -n "$errs" ] || continue
+            found=$((found + 1))
             {
               echo "## $f - error lines"
               echo '```'
-              grep -nE '\[FAIL\]|MISSING|error:|fatal error:|Error [0-9]|undefined reference|No such file' "$f" | head -n 80 || true
+              printf '%s\n' "$errs"
               echo '```'
               echo ''
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "$found" -eq 0 ]; then
+            {
+              echo '## Error lines'
+              echo ''
+              echo '(no error pattern matched in either log; see the tails below)'
+              echo ''
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          for f in prepare.log build.log; do
+            [ -f "$f" ] || continue
+            {
               echo "## $f - last 100 lines"
               echo '```'
               tail -n 100 "$f"
               echo '```'
+              echo ''
             } >> "$GITHUB_STEP_SUMMARY"
           done
 
