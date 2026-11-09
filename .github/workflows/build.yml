@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       sukisu_ref:
-        description: SukiSU-Ultra branch (main is proven broken on 4.4)
+        description: SukiSU-Ultra branch (builtin ships the complete 4.4 compat layer)
         required: true
-        default: old
+        default: builtin
         type: choice
         options:
+          - builtin
           - old
           - builtin-new
-          - builtin
           - main
 
 jobs:

@@ -8,18 +8,20 @@
 
 ## 0. 你要做的，和不用做的
 
-**不用做**：不改任何 C 代码、不手动打 hook、不编辑 defconfig、不装 Linux（走路线 A）、不装交叉编译器。
+**不用做**：不用手动改 C 代码（hook 与兼容垫片由 `build.sh` 在 CI 里插入）、不编辑 defconfig、不装 Linux（走路线 A）、不装交叉编译器。
 
-**要做**：把 4 个文件放进一个 GitHub 仓库 → 点一次 Run workflow → 看懂日志 → 下载 zip → 在手机上备份 `boot.img` → 刷 zip → 装 Manager APK 验证。
+**要做**：把工程目录里的文件放进一个 GitHub 仓库 → 点一次 Run workflow → 看懂日志 → 下载 zip → 在手机上备份 `boot.img` → 刷 zip → 装 Manager APK 验证。
 
-工程里四个文件：
+工程里的文件：
 
 | 文件 | 干什么 |
 |---|---|
-| `build.sh` | 主脚本，分 `prepare` / `build` / `pack` 阶段 |
+| `build.sh` | 主脚本，分 `prepare` / `hooks` / `build` / `pack` 阶段 |
 | `toolchain.conf` | 所有已核实的下载 URL、commit 哈希、defconfig 名、编译器版本 |
 | `anykernel.sh` | AnyKernel3 的刷入配置，声明设备名和 boot 分区路径 |
 | `.github/workflows/build.yml` | GitHub Actions 的一键流程 |
+| `.gitattributes` | 强制 `*.sh` / `*.yml` 保持 LF，压过 Windows 的 `core.autocrlf` |
+| `README.md` | 这份手册 |
 
 ---
 
@@ -141,7 +143,7 @@ refspec，完整写法 `main:main`（本地 main → 远程同名分支），只
 1. 点仓库顶部的 `Actions` 标签。第一次进来若显示 "Workflows aren't running for this repository"，点那句绿色的 `I understand my workflows, go ahead and enable them`
 2. 左侧列表选 `Build dumpling SukiSU kernel`
 3. 右侧点开 `Run workflow`：`Use workflow from` 选 `main`，
-   `SukiSU-Ultra branch` 选 `old`
+   `SukiSU-Ultra branch` 选 `builtin`（当前默认值）
 4. 点绿色的 `Run workflow`，页面刷新出一条黄色转圈的记录，点进去看实时日志
 
 **点开面板会看到两个都带 branch 的下拉框，它们管的是两个不同仓库。**
@@ -162,8 +164,9 @@ git clone --depth 1 -b "$SUKISU_REF" "$SUKISU_REPO" "$ksu"
 ```
 
 所以 `builtin` / `old` / `main` 是 `SukiSU-Ultra/SukiSU-Ultra` 的分支名，
-和你仓库的分支毫无关系。Run #1 证明了 `main` 在 4.4 上编不过，
-现在默认值改成 `old`；`builtin` 要手工在 4.4 源码里打 hook，先别选。
+和你仓库的分支毫无关系。Run #1 证明 `main` 在 4.4 上编不过，Run #2 证明
+`old` 缺 4.4 兼容层。当前默认值是 `builtin`——它自带完整垫片，所需的
+3 处 hook 由 `build.sh` 在 CI 里自动插入，不用你碰 C 代码（见 5.5）。
 
 点下去之后，GitHub 生成一次 run，并把它**钉在点击那一刻的默认分支 HEAD 上**。
 Run #1 钉的是 `76863c4`；`b60a4d5` push 上去之后，新点的 run 会钉在
@@ -309,10 +312,11 @@ Run #1 那轮 job logs 下载接口返回
 |---|---|---|
 | `download failed: https://...` | 某个源没下下来，`fetch` 会直接停 | 贴出整行 URL，我换源或校验 URL；别自己改 `toolchain.conf` 里的哈希 |
 | `self-check failed` 且上面有 `MISSING ...` | 内核树三处改动没落上 | 看是哪条 MISSING，连同上下文贴出来 |
-| `fatal error: xxx.h: No such file or directory` / 大量 `error:` 出现在 `Compile kernel` | **4.4.302 与当前 SukiSU `main` 分支不兼容**——这是本工程唯一真正没验证过的环节 | 贴报错前 50 行，判断是缺 backport，还是该换 `builtin` 分支再手工打 hook |
+| `fatal error: xxx.h: No such file or directory` / 大量 `error:` 出现在 `Compile kernel` | 4.4.302 与所选 SukiSU 分支不兼容，或自动补丁没覆盖到 | 把 Summary 里的 `error:` 行贴出来逐条补；别自己改 `toolchain.conf` 哈希 |
 | `No space left on device` | runner 磁盘被工具链和 `out/` 占满 | 贴日志，可以加清理步骤，不是你的操作问题 |
 | `/usr/bin/python: bad interpreter` 或 GCC wrapper 报 python 语法错 | Ubuntu 22.04 上 python2 装不上 | 贴日志，我改 workflow 的兼容处理 |
-| `MISSING manual hooks` | 只有选了 `builtin` 才会触发 | 换回 `main` 重跑；或先跑 `bash ./build.sh hooks` 打印你这棵树上的真实 hook 位置 |
+| `MISSING manual hook in fs/xxx.c` / `[FAIL] ... anchor not found` | 只有 `builtin` 会触发；自动插入时锚点没匹配上 | 贴出 `Inserting manual hooks` 那一段完整输出；`bash ./build.sh hooks` 可预览真实位置 |
+| `Prepare sources and self-check` 失败、`Compile kernel` 显示 skipped | 自检主动拦下，编译根本没开始 | 看上面的 `MISSING ...` 行；exit code 1 是脚本 `die`，不是编译器给的 2 |
 | `unknown stage` | 阶段名拼错 | 只能用 `prepare` / `hooks` / `build` / `pack` / `all` / `clean` |
 | `Process completed with exit code 2.` 单独出现在 `Compile kernel` | 这是 GitHub 给步骤盖的结论章，不是报错正文 | 按上面三条取日志；它只说明 `make` 挂了 |
 
@@ -356,25 +360,28 @@ tracepoint，给 GKI / LKM；`builtin` 不用 kprobes，由内核源码调用 ho
 
 `build.yml`：
 
-- 分支下拉框扩成 `old` / `builtin-new` / `builtin` / `main`，默认 `old`
-  —— 当时按"最老的代码快照、Kbuild 只有 16 个对象"选的。**Run #2 证明这个
+- 分支下拉框扩成 `old` / `builtin-new` / `builtin` / `main`，当时默认 `old`
+  —— 按"最老的代码快照、Kbuild 只有 16 个对象"选的。**Run #2 证明这个
   判断不成立**，见 5.4：`old` 几乎没有 4.4 兼容层，真正带完整垫片的是
-  `builtin`。保留 `old` 作为当前实验分支，是为了先用一轮确认剩余不兼容点。
+  `builtin`。（这一节记录 Run #2 之后的改动；默认值已在 5.5 改为
+  `builtin`，选项顺序也调过。）
 - 加 `actions/cache/restore@v4` + `actions/cache/save@v4`，只缓存
   `work/*.zip`、`*.tar.gz`、clang、prebuilts；`prepare` 成功后立刻保存，
   因为编译失败会跳过 cache 的 post 步骤。内核树和 KernelSU checkout 不缓存，
   避免换分支时复用错的源码。首次仍要下载，之后每轮省约 19 分钟。
 
-三处别踩：
+当时记下的三处坑（现状见 5.5）：
 
 - `builtin` 选项会触发 `selfcheck` 的 manual hooks 检查，没打 hook 会直接
-  `MISSING manual hooks`。**先别选它。**
-- 官网 builtin 指南的补丁写 `ksu_handle_execveat(...)`，但 `builtin` 分支
-  真实头文件是 `ksu_handle_execveat_sucompat(...)` /
-  `ksu_handle_execveat_ksud(...)`，`ksud.h` 里也没有
-  `ksu_handle_sys_reboot`。官网原话："Check their exact signatures against
-  the branch you build; the patches below are for reference only." 照抄会
-  链接失败。
+  `MISSING manual hooks`。当时的结论是"先别选它"；Run #3 正是撞在这里，
+  5.5 已把 hook 改成自动插入，现在 `builtin` 是默认分支。
+- 官网指南写 `ksu_handle_execveat(...)`。我上一轮说"`builtin` 真实头文件
+  只有 `ksu_handle_execveat_sucompat` / `_ksud`，照抄会链接失败"——
+  **这句是错的**。抓 `feature/sucompat.c` 全文核实：非 SUSFS 分支确实
+  **定义了** `ksu_handle_execveat`，只是没在头文件里声明，官网用 `extern`
+  声明正是为了绕过它。真正不存在的只有 `ksu_handle_sys_reboot`，5.5
+  因此跳过 reboot hook。官网原话："Check their exact signatures against
+  the branch you build; the patches below are for reference only."
 - `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 不在 SukiSU-Ultra 的
   `builtin/kernel/Kconfig` 里（全文只有 KSU / KPM / SUSFS 系列）；那一段是
   官网引用的 backslashxx/KernelSU Kconfig 参考表。别去 defconfig 里开它。
@@ -433,9 +440,9 @@ kernel_read/write、<4.12 的 kvmalloc、<5.2 的 strscpy）"——**把两个�
   groups_sort、selinux_inode/cred 等一整套。
 
 也就是说 Run #2 撞的两处，`builtin` 早就解决了。代价是 `builtin` 不用
-kprobes，得在 4.4 源码里手工打 hook（见 5.2 的三个坑）。
+kprobes，得在 4.4 源码里打 hook（见 5.2 的三个坑；5.5 已把这件事自动化）。
 
-本轮补丁选择"借用 `builtin` 的垫片、留在 `old` 的 kprobes 路线"：新建
+当时选了"借用 `builtin` 的垫片、留在 `old` 的 kprobes 路线"：新建
 `ksu_44_compat.h`，只摘取上述两段官方垫片，注入到所有用到
 `TWA_RESUME` / `kernel_read` / `kernel_write` 的 `.c`。没有整包复制
 `builtin` 的 compat 头，因为它 `<4.10` 分支 extern 了
@@ -443,11 +450,12 @@ kprobes，得在 4.4 源码里手工打 hook（见 5.2 的三个坑）。
 `old` 自带的 `kernel_compat.h`，因为那个文件里的
 `copy_from_user_nofault()` 会引出新的 5.8+ 依赖。
 
-**下一轮**：push 三个改动 → Actions → `Run workflow` → 仓库分支 `main`，
-SukiSU-Ultra branch 仍选 `old`。失败时 Summary 现在会先列所有
-`error:` 行（不再是只有尾部 100 行），复制那一段就够。
+**当时给的下一轮指令**（已被 5.5 取代）：push 三个改动 → Actions →
+`Run workflow` → 仓库分支 `main`，SukiSU-Ultra branch 选 `old`。实际跑的
+是 Run #3，选了 `builtin`。失败时 Summary 会先列所有 `error:` 行（不再是
+只有尾部 100 行）。
 
-**止损点**：Run #1 是 `MODULE_IMPORT_NS`，Run #2 是 `TWA_RESUME` +
+**当时的止损点**：Run #1 是 `MODULE_IMPORT_NS`，Run #2 是 `TWA_RESUME` +
 kernel_read/write，都是"5.x API 直接用在 4.4"的同一模式。若 Run #3 还成片
 出现这类符号（`copy_from_user_nofault`、BTF、namespace、seccomp cache），
 就该换 `builtin` 并接受手工 hook，而不是继续逐条打垫片。社区
@@ -456,24 +464,118 @@ kernel_read/write，都是"5.x API 直接用在 4.4"的同一模式。若 Run #3
 但那是 **LineageOS 21 / Android 14** 的 KernelSU 包，不是 SukiSU，与当前
 22.2 是否兼容没验证过。
 
+### 5.5 Run #3：exit 1 不是编译失败，hook 现在自动打
+
+Run #3（`42488783553`，`head_sha=b9ffa34`）只跑了 1 分 22 秒。job 步骤表
+把因果钉死了：
+
+| 步骤 | 结论 |
+|---|---|
+| 1–4（checkout / 缓存恢复 / 系统依赖） | 成功，6 项下载全 `cached` |
+| 5 `Prepare sources and self-check` | **失败**，19 秒 |
+| 6 `Save source and toolchain cache` | skipped（上一步失败，条件不成立） |
+| 7 `Compile kernel` | **skipped** |
+| 8 / 9 日志留存 | 步骤成功，但 `build.log` 根本没生成 |
+
+`exit code 1` 来自 `build.sh` 的 `die()`，不是 `make`。前两轮的 `exit 2`
+才是 `make` 的退出码。这次连编译器都没启动。
+
+拦在 `selfcheck()` 里：选了 `builtin` 就数 `fs/` / `kernel/` 下有多少文件
+出现 `ksu_handle_`，少于 3 个直接 `die`。这次是 0 个，于是打印
+`MISSING manual hooks (found 0 files with ksu_handle_)` 后退出。你贴的日志
+在 6 行 `OK` 和最后那行 Error 之间少了这几行，应该是复制时略过了；
+`Compile kernel` 显示 skipped，和代码路径完全对得上。
+
+自检拦得对。`builtin` 不注册 kprobes，那几个 hook 调用就是驱动唯一的
+入口。没打 hook 编出来的内核能开机，但 SukiSU 永远不会被触发，拿不到
+root。与其花 5 分钟编一个死内核，不如在 prepare 就停。
+
+#### 核实过的 builtin 源码
+
+| 事实 | 来源 |
+|---|---|
+| `kernel_compat.h` 有 `<4.14` 的 `ksu_kernel_read_compat/write_compat`、`<5.7` 的 `#define TWA_RESUME 1`，另有 kvmalloc、strscpy、close_fd、groups_sort | raw 全文 |
+| `ksu_main.c` 是 unity build：先 `#include "kernel_compat.h"`，再 include 所有 `.c` | raw 全文 |
+| `ksu_handle_execveat` / `ksu_handle_faccessat` / `ksu_handle_stat` 都在 `feature/sucompat.c` 的非 SUSFS 分支定义，签名与官网 `extern` 声明一致 | raw 全文 |
+| `ksu_handle_sys_reboot` 在 `runtime/ksud.c` 里**没有定义** | raw 全文 |
+| `builtin/kernel/Kconfig` 全文只有 KSU / KPM / SUSFS 系列，**没有** `CONFIG_KSU_TAMPER_SYSCALL_TABLE` | raw 全文 |
+
+最后两条决定补丁怎么写。官网说 ARM64 开
+`CONFIG_KSU_TAMPER_SYSCALL_TABLE=y` 就能跳过全部手工 hook——那出自它
+引用的 backslashxx/KernelSU 参考表，SukiSU 里没这个选项，照做只是白改
+defconfig。官网的 reboot hook 也跳过：符号不存在，插进去只会链接期
+`undefined reference`。Android 15 还不需要 `sys_newfstat` 的 ret_hook
+（那是 Android 16+）。
+
+#### 三个锚点，来自你这棵 4.4 树
+
+不是照官网模板抄的，逐字核过 `lineage-22.2` 的 raw 文件：
+
+| 文件 / 函数 | 插在哪一行之前 | 调用 |
+|---|---|---|
+| `fs/exec.c` `do_execveat_common()` | `if (IS_ERR(filename))` | `ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags)` |
+| `fs/open.c` `SYSCALL_DEFINE3(faccessat)` | `if (mode & ~S_IRWXO)` | `ksu_handle_faccessat(&dfd, &filename, &mode, NULL)` |
+| `fs/stat.c` `SYSCALL_DEFINE4(newfstatat)` | `error = vfs_fstatat(dfd, filename, &stat, flag);` | `ksu_handle_stat(&dfd, &filename, &flag)` |
+
+三个位置都在局部变量声明之后、第一条语句之前。4.4 是 C89 风格，
+把 `extern` 声明插进声明区会直接编译失败——所以补丁先用函数签名定位，
+再在锚点前插入；找不到锚点就报 `[FAIL] ... anchor not found`，不静默
+跳过。插入带 marker，重复运行不叠加。
+
+#### 修掉的两个自己的坑
+
+`apply_compat_patches()` 原来无条件把 `ksu_44_compat.h` 注进所有用到
+`TWA_RESUME` / `kernel_read` / `kernel_write` 的 `.c`。在 `old` 上这是对的；
+在 `builtin` 上会出事：它自带的 `kernel_compat.h` 已定义同名的
+`ksu_kernel_read_compat`（非 static），而我的是 `static inline`，同一个
+unity 编译单元里两份定义就是重定义错误。Run #3 被自检提前拦下，这个错
+还没暴露。现在脚本检测到自带垫片就跳过注入，日志会打
+`builtin kernel_compat.h already provides 4.4 shims; injection skipped`。
+
+另有一句写死的提示 "…or switch to the 'builtin' branch"，在你已经选了
+`builtin` 时照样打印，纯属误导，去掉了。
+
+#### 下一轮
+
+```powershell
+git add -A
+git commit -m "feat: auto-insert builtin manual hooks, skip builtin compat injection"
+git push
+```
+
+Actions → `Run workflow` → `Use workflow from` 选 `main`，
+`SukiSU-Ultra branch` 选 `builtin`（现在是默认值）。prepare 阶段应该出现
+`hooked: fs/exec.c` / `fs/open.c` / `fs/stat.c` 三行，自检多一行
+`OK  manual hooks present (3 sites)`，然后才进 `Compile kernel`。
+
+缓存已保存，这轮 prepare 约 20 秒，编译 5 分钟左右。若编译再红，
+Summary 会列出 `error:` 行，复制给我。
+
+**没验证的**：三处 hook 调用、自带 `kernel_compat.h` 在 4.4 上能否编过、
+以及链接期符号是否齐全，全部只在 Run #4 见分晓。本机没有 Linux 内核
+工具链，Bash 沙箱无外网，本地只验过 Python 补丁逻辑和 `bash -n`。
+
 ---
 
 ## 6. 边界，说清楚
 
-- 2026-11-08 跑过两轮真实编译，`prepare` 与缓存两轮都成功，两轮
-  `Compile kernel` 都以 exit code 2 失败。**端到端编译尚未成功**。Run #1 卡在
-  `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME` 与
-  `kernel_read/write` 签名（5.3）。两轮都是 5.x API 用在 4.4 上的同一模式，
-  后面还有多少未知，只能一轮轮收敛。
+- 2026-11-08 跑过三轮：`prepare` 与缓存三轮都成功。**端到端编译尚未成功**。
+  Run #1 卡在 `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在
+  `TWA_RESUME` 与 `kernel_read/write` 签名（5.3），两次 `Compile kernel`
+  都是 exit code 2。Run #3 选了 `builtin`，在 prepare 自检被拦下，
+  `Compile kernel` 是 skipped（5.5）。
 - 脚本在 Windows 主机上写，本机 Bash 沙箱无外网（`curl` HTTP 000），也没有
   Linux 内核工具链。所有 URL、哈希、defconfig 名、构建命令、AK3 属性都从
-  上游 raw 文件核实；**生成的 C 兼容垫片没有在真实 4.4 树上编译过**，
-  Run #3 才是它的第一次验证。
+  上游 raw 文件核实。**生成的 C 兼容垫片、自动插入的三处 hook 调用、
+  `builtin` 自带 compat 层在 4.4 上的表现，全都没有在真实树上编译过**，
+  Run #4 才是它们的第一次验证。
 - 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、
   Makefile 匹配、defconfig 去重追加、兼容补丁单测（注入位置、相对路径、
-  幂等性、无关文件不变）、交付文件全是 LF 换行。没做 YAML 解析器级语法
-  检查（本机无 PyYAML）。
-- `SUKISU_REF=builtin` 需要在 4.4 源码里手工打 hook，4.4 是 C89 风格，
-  插错位置就编译失败；但它带完整 4.4 兼容层（5.4）。`main` 已在 Run #1
-  证伪，`old` 已证伪"最老即最兼容"的假设。
+  幂等性、无关文件不变、builtin 分支跳过注入）、hook 插入单测（三处锚点
+  命中、插在声明之后锚点之前、幂等、锚点缺失时明确报错）、交付文件全是
+  LF 换行。没做 YAML 解析器级语法检查（本机无 PyYAML）。
+- `SUKISU_REF=builtin` 现在是默认分支，3 处 hook 由脚本按 4.4 源码锚点
+  自动插入，不用你改 C 代码。它带完整 4.4 兼容层（5.4）；代价是这些
+  hook 的 C 代码尚未编译验证。`main` 已在 Run #1 证伪，`old` 已证伪
+  "最老即最兼容"的假设。
 - 刷机有变砖风险。备份 `boot.img` 是唯一的一步回滚，别跳过。
