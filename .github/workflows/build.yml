@@ -139,6 +139,27 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # The artifact name follows the repo input, so a KernelSU-Next build is
+      # never labelled "sukisu". Default repo keeps the historical name.
+      - name: Resolve artifact name
+        id: names
+        env:
+          KSU_REPO: ${{ inputs.ksu_repo }}
+          KSU_REF: ${{ inputs.sukisu_ref }}
+        run: |
+          base="${KSU_REPO##*/}"
+          base="${base%.git}"
+          case "$base" in
+            SukiSU-Ultra|SukiSU) slug=sukisu ;;
+            KernelSU-Next)       slug=kernelsu-next ;;
+            "")                  slug=ksu ;;
+            *)                   slug=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]') ;;
+          esac
+          artifact="dumpling-${slug}-${KSU_REF}-4.4.302"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "resolved artifact name: $artifact"
+
       - name: Pack AnyKernel3 zip
         env:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
@@ -148,6 +169,6 @@ jobs:
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: dumpling-sukisu-${{ inputs.sukisu_ref }}-4.4.302
+          name: ${{ steps.names.outputs.artifact }}
           path: out/*.zip
           compression-level: 0

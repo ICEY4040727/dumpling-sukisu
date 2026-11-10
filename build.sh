@@ -53,6 +53,20 @@ STAGE="${1:-all}"
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
 
+# Product tag used in output file names and log lines. Derived from the repo
+# URL, so switching to another KSU fork cannot leave a "SukiSU" label on a
+# KernelSU-Next build. The historical spelling is kept for the default repo.
+ksu_product_tag() {
+  local base="${SUKISU_REPO##*/}"
+  base="${base%.git}"
+  case "$base" in
+    SukiSU-Ultra|SukiSU) echo "SukiSU" ;;
+    KernelSU-Next)       echo "KernelSU-Next" ;;
+    "")                  echo "KSU" ;;
+    *)                   echo "$base" ;;
+  esac
+}
+
 case "$(uname -s)" in
   Linux*) ;;
   *) die "A Linux build host is required (ubuntu-22.04 or WSL2). Current: $(uname -s)" ;;
@@ -88,7 +102,7 @@ download_all() {
 }
 
 integrate_sukisu() {
-  log "Integrating SukiSU-Ultra ($SUKISU_REF) into the kernel tree"
+  log "Integrating $(ksu_product_tag) ($SUKISU_REF) into the kernel tree"
   local ksu="$KDIR/KernelSU"
   if [ ! -d "$ksu/.git" ]; then
     git clone --depth 1 -b "$SUKISU_REF" "$SUKISU_REPO" "$ksu" \
@@ -951,10 +965,10 @@ pack_ak3() {
   cp -f "$img" "$AK3/$KERNEL_IMAGE"
   cp -f "$ROOT/anykernel.sh" "$AK3/anykernel.sh"
   local name
-  name="dumpling-SukiSU-${SUKISU_REF}-4.4.302-$(date +%Y%m%d-%H%M%S)"
+  name="dumpling-$(ksu_product_tag)-${SUKISU_REF}-4.4.302-$(date +%Y%m%d-%H%M%S)"
   ( cd "$AK3" && zip -r9 -q "$OUT/$name.zip" . -x '.git*' 'README.md' '*placeholder' )
   echo "  output: $OUT/$name.zip"
-  echo "  flash this zip in TWRP, then install the SukiSU Manager APK."
+  echo "  flash this zip in TWRP, then install the $(ksu_product_tag) Manager APK."
   echo "  rollback: restore your backed-up boot.img."
 }
 
