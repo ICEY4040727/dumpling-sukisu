@@ -1317,3 +1317,40 @@ TikTok / Facebook 用自己的检测，不调 Play Integrity。这套改动只
 
 同时更新：`build.sh` 头部状态注释（root 已在真机验证）、4.3 节验证
 标准（内核版本末尾改为 `-perf+`，并注明早期包是 `-sukisu-dumpling`）。
+
+### 5.14 KernelSU-Next 参数化（2026-11-10，未构建）
+
+目标换成 Play Integrity + TikTok/Facebook + 定位伪装之后，SUSFS 的
+位置重新变重要（挂载信息隐藏对过检测有实际收益）。SukiSU-Ultra 的
+`builtin` 分支从来不含 SUSFS——它是外部补丁集，susfs4ksu 的最低非
+GKI 分支是 `kernel-4.9`，没有 4.4。所以可选的是换一个内置 SUSFS 的
+root 方案：KernelSU-Next（pershoot/KernelSU-Next）。
+
+已查证的事实：
+
+- 仓库结构与 SukiSU-Ultra 同构（`kernel/`、`userspace/`、`manager/`），
+  `integrate_sukisu()` 的 symlink 手法可以直接复用。
+- 分支：`dev`、`dev-susfs`、`next-susfs`、`next-susfs_OLD`、
+  `next-susfs_BACKUP-*`。带 SUSFS 的是 `next-susfs`。
+- 官方文档宣称支持 4.4 至 6.18，但**没有任何一个分支在这棵树上
+  编译过**。
+
+改了三处，让两个仓库一键切换（默认值不变，点 Run workflow 不填也
+和以前完全一样）：
+
+- `toolchain.conf`：`SUKISU_REPO` 改为可被环境变量覆盖，注释写清
+  KSU-Next 的用法和代价。
+- `build.yml`：`sukisu_ref` 从 choice 改为 string（choice 的选项写死
+  了 SukiSU 的分支名，装不下 KSU-Next 的 `next-susfs`），新增
+  `ksu_repo` 输入，三个步骤的 env 都注入。
+- `build.sh` 头部注释补一条 `SUKISU_REPO` 覆盖示例。
+
+**预期**：第一次跑 KSU-Next 大概率在 `apply_compat_patches` /
+`selfcheck` 阶段失败——build.sh 里的 4.4 兼容层、manual hooks 和
+selfcheck 清单全是按 SukiSU builtin 分支的源码文件写的（`ksu_main.c`、
+`extension/extension.c`、`manager/pkg_observer.c`），KSU-Next 的对应
+文件名不同。修它等于重走 Run #1 到 Run #8 的调试循环，一轮 CI 12
+分钟起。这是已知成本，不是意外。
+
+顺序建议：先把 Run #9（伪 banner 的 SukiSU builtin）刷进去用着，
+KSU-Next 作为并行实验，不影响主线。

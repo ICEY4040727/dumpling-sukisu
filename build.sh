@@ -15,6 +15,9 @@
 #   SUKISU_REF=builtin ./build.sh all     full 4.4 compat layer; hooks inserted below
 #   SUKISU_REF=old     ./build.sh all     kprobes + generated 4.4 compat shims
 #   SUKISU_REF=main    ./build.sh all     proven broken on 4.4 (Run #1)
+# The repo itself is overridable too, for the KernelSU-Next experiment
+# (never compiled here; its 4.4 support is unverified):
+#   SUKISU_REPO=https://github.com/pershoot/KernelSU-Next.git SUKISU_REF=next-susfs ./build.sh all
 #
 # IMPORTANT / honest scope:
 #   Every URL, hash, defconfig name, build command and AK3 property in this

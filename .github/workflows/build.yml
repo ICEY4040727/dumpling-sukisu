@@ -3,16 +3,25 @@ name: Build dumpling SukiSU kernel
 on:
   workflow_dispatch:
     inputs:
+      ksu_repo:
+        description: >
+          Root driver repo. Default is SukiSU-Ultra (the only one ever
+          compiled here). Alternative:
+          https://github.com/pershoot/KernelSU-Next.git — ships SUSFS
+          built in, but has never compiled against this 4.4 tree, so
+          expect a fresh debug loop like Run #1-#8.
+        required: true
+        default: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
+        type: string
       sukisu_ref:
-        description: SukiSU-Ultra branch (builtin ships the complete 4.4 compat layer)
+        description: >
+          Branch of the repo above. SukiSU-Ultra: builtin (default, only
+          branch proven on 4.4), old, builtin-new, main (broken, Run #1).
+          KernelSU-Next: next-susfs, dev. Check the repo's branch list
+          before typing something else.
         required: true
         default: builtin
-        type: choice
-        options:
-          - builtin
-          - old
-          - builtin-new
-          - main
+        type: string
 
 jobs:
   build:
@@ -52,6 +61,7 @@ jobs:
       - name: Prepare sources and self-check
         env:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
+          SUKISU_REPO: ${{ inputs.ksu_repo }}
         run: |
           set -o pipefail
           bash ./build.sh prepare 2>&1 | tee prepare.log
@@ -73,6 +83,7 @@ jobs:
       - name: Compile kernel
         env:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
+          SUKISU_REPO: ${{ inputs.ksu_repo }}
         run: |
           set -o pipefail
           bash ./build.sh build 2>&1 | tee build.log
@@ -131,6 +142,7 @@ jobs:
       - name: Pack AnyKernel3 zip
         env:
           SUKISU_REF: ${{ inputs.sukisu_ref }}
+          SUKISU_REPO: ${{ inputs.ksu_repo }}
         run: bash ./build.sh pack
 
       - name: Upload flashable zip
