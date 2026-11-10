@@ -14,14 +14,14 @@
 
 工程里的文件：
 
-| 文件 | 干什么 |
-|---|---|
-| `build.sh` | 主脚本，分 `prepare` / `hooks` / `build` / `pack` 阶段 |
-| `toolchain.conf` | 所有已核实的下载 URL、commit 哈希、defconfig 名、编译器版本 |
-| `anykernel.sh` | AnyKernel3 的刷入配置，声明设备名和 boot 分区路径 |
-| `.github/workflows/build.yml` | GitHub Actions 的一键流程 |
-| `.gitattributes` | 强制 `*.sh` / `*.yml` 保持 LF，压过 Windows 的 `core.autocrlf` |
-| `README.md` | 这份手册 |
+| 文件                            | 干什么                                                    |
+| ----------------------------- | ------------------------------------------------------ |
+| `build.sh`                    | 主脚本，分 `prepare` / `hooks` / `build` / `pack` 阶段        |
+| `toolchain.conf`              | 所有已核实的下载 URL、commit 哈希、defconfig 名、编译器版本               |
+| `anykernel.sh`                | AnyKernel3 的刷入配置，声明设备名和 boot 分区路径                      |
+| `.github/workflows/build.yml` | GitHub Actions 的一键流程                                   |
+| `.gitattributes`              | 强制 `*.sh` / `*.yml` 保持 LF，压过 Windows 的 `core.autocrlf` |
+| `README.md`                   | 这份手册                                                   |
 
 ---
 
@@ -76,8 +76,9 @@ Quick setup 里那行 `Get started by creating a new file or uploading an existi
 
 **第二批，单独建 workflow**：仓库现在有文件了，点 `Add file` → `Create new file`，在**文件名输入框里直接写完整路径** `.github/workflows/build.yml`。官方文档原话是 "To create subdirectories, type the `/` directory separator"——带斜杠的路径会自动建出两级目录，隐藏目录也一样。把 `build.yml` 的内容整段粘进去，点 `Commit changes...`，在弹出的对话框里填 message 再点 `Commit changes`。
 
-> 想顺手学 git，这条路一次搞定，也不怕隐藏目录（空仓库 clone 时提示
+> 想顺手学 git，这条路一次搞定，也不怕隐藏目录（空仓库 clone 时提示  
 > `You appear to have cloned an empty repository` 是正常的）：
+>
 > ```bash
 > git clone https://github.com/ICEY4040727/dumpling-sukisu.git
 > cd dumpling-sukisu
@@ -100,9 +101,9 @@ git commit -m "init: dumpling sukisu build"
 git push -u origin main
 ```
 
-`git push -u origin main` 逐字拆开：`push` 把本地提交送到远程；`origin` 是
-remote 别名，git 查 `.git/config` 的 `[remote "origin"]` 拿到 URL；`main` 是
-refspec，完整写法 `main:main`（本地 main → 远程同名分支），只写一个 `main`
+`git push -u origin main` 逐字拆开：`push` 把本地提交送到远程；`origin` 是  
+remote 别名，git 查 `.git/config` 的 `[remote "origin"]` 拿到 URL；`main` 是  
+refspec，完整写法 `main:main`（本地 main → 远程同名分支），只写一个 `main`  
 时目标同名；`-u` 是 `--set-upstream`，额外往 config 记一笔：
 
 ```ini
@@ -111,72 +112,72 @@ refspec，完整写法 `main:main`（本地 main → 远程同名分支），只
     merge = refs/heads/main
 ```
 
-这笔记录把「本地 main 对应 origin/main」固定下来，以后 `git push` / `git pull`
-不用再带参数。第一次 push 时 git 会打印
-`branch 'main' set up to track 'origin/main'.`，`git status -sb` 显示
-`## main...origin/main`。不加 `-u` 的话，裸 `git push` 报
-`fatal: The current branch main has no upstream branch.`。
+这笔记录把「本地 main 对应 origin/main」固定下来，以后 `git push` / `git pull`  
+不用再带参数。第一次 push 时 git 会打印  
+`branch 'main' set up to track 'origin/main'.`，`git status -sb` 显示  
+`## main...origin/main`。不加 `-u` 的话，裸 `git push` 报  
+`fatal: The current branch main has no upstream branch.`。  
 `git clone` 出来的仓库自带这段跟踪配置，所以 clone 那条路线不用 `-u`。
 
 三个容易撞的点：
 
-- 在 `git init` 之前敲 `git remote add`，会报
-  `fatal: not a git repository (or any of the parent directories): .git`。
+- 在 `git init` 之前敲 `git remote add`，会报  
+  `fatal: not a git repository (or any of the parent directories): .git`。  
   git 从当前目录逐级往上找 `.git`，找不到就没有地方写 remote 配置。
-- 一个 commit 都还没有就 `git push`，报
+- 一个 commit 都还没有就 `git push`，报  
   `error: src refspec main does not match any`。
-- **分支名必须是 `main`**。`git init` 在 Windows 上常默认建 `master`，而
-  GitHub 的默认分支是 `main`。GitHub Docs 原话："To trigger the
-  `workflow_dispatch` event, your workflow must be in the default branch."
-  推成 `master` 的话，仓库首页默认显示的 `main` 仍是空的，Actions 页面
-  也不会出现 `Run workflow` 按钮。`git branch -M main` 在无提交的空仓库上
+- **分支名必须是 `main`**。`git init` 在 Windows 上常默认建 `master`，而  
+  GitHub 的默认分支是 `main`。GitHub Docs 原话："To trigger the  
+  `workflow_dispatch` event, your workflow must be in the default branch."  
+  推成 `master` 的话，仓库首页默认显示的 `main` 仍是空的，Actions 页面  
+  也不会出现 `Run workflow` 按钮。`git branch -M main` 在无提交的空仓库上  
   同样有效（实测 HEAD 从 `refs/heads/master` 改为 `refs/heads/main`）。
 
-工程里还有一个 `.gitattributes`，把 `*.sh` / `*.yml` / `*.conf` 等声明成
-`text eol=lf`。Windows 上常见的 `core.autocrlf=true` 会在 checkout 时把脚本
-改写成 CRLF，而 Linux 上的 bash 见到 CRLF 会直接报错；这个文件显式压过全局
-设置，保证 GitHub Actions 的 runner 取到的始终是 LF。如果你在加它之前已经
+工程里还有一个 `.gitattributes`，把 `*.sh` / `*.yml` / `*.conf` 等声明成  
+`text eol=lf`。Windows 上常见的 `core.autocrlf=true` 会在 checkout 时把脚本  
+改写成 CRLF，而 Linux 上的 bash 见到 CRLF 会直接报错；这个文件显式压过全局  
+设置，保证 GitHub Actions 的 runner 取到的始终是 LF。如果你在加它之前已经  
 跑过 `git add -A`，再跑一次 `git add -A` 把它纳入暂存。
 
 ### 2.3 跑第一次构建
 
 1. 点仓库顶部的 `Actions` 标签。第一次进来若显示 "Workflows aren't running for this repository"，点那句绿色的 `I understand my workflows, go ahead and enable them`
 2. 左侧列表选 `Build dumpling SukiSU kernel`
-3. 右侧点开 `Run workflow`：`Use workflow from` 选 `main`，
+3. 右侧点开 `Run workflow`：`Use workflow from` 选 `main`，  
    `SukiSU-Ultra branch` 选 `builtin`（当前默认值）
 4. 点绿色的 `Run workflow`，页面刷新出一条黄色转圈的记录，点进去看实时日志
 
 **点开面板会看到两个都带 branch 的下拉框，它们管的是两个不同仓库。**
 
-`Use workflow from` 是 GitHub 自带的，列的是**你自己这个仓库**
-（`ICEY4040727/dumpling-sukisu`）的分支和 tag。它决定两件事：从哪份
-`.github/workflows/build.yml` 读步骤，以及 `actions/checkout` 检出哪个 commit。
-这个仓库目前只有 `main` 一个分支、0 个 tag，所以这里只有 `main` 可选，
-`builtin` 根本不会出现在列表里。GitHub Docs 把这个框叫 "Branch dropdown"，
+`Use workflow from` 是 GitHub 自带的，列的是**你自己这个仓库**  
+（`ICEY4040727/dumpling-sukisu`）的分支和 tag。它决定两件事：从哪份  
+`.github/workflows/build.yml` 读步骤，以及 `actions/checkout` 检出哪个 commit。  
+这个仓库目前只有 `main` 一个分支、0 个 tag，所以这里只有 `main` 可选，  
+`builtin` 根本不会出现在列表里。GitHub Docs 把这个框叫 "Branch dropdown"，  
 原文是 "Select the Branch dropdown menu and click a branch to run the workflow on."
 
-`SukiSU-Ultra branch` 是我们在 `build.yml` 的 `workflow_dispatch.inputs` 里
-自己加的，GitHub 只把它当一个字符串。workflow 把这个值放进环境变量
+`SukiSU-Ultra branch` 是我们在 `build.yml` 的 `workflow_dispatch.inputs` 里  
+自己加的，GitHub 只把它当一个字符串。workflow 把这个值放进环境变量  
 `SUKISU_REF`，`build.sh` 拿它去 clone **另一个仓库**：
 
 ```bash
 git clone --depth 1 -b "$SUKISU_REF" "$SUKISU_REPO" "$ksu"
 ```
 
-所以 `builtin` / `old` / `main` 是 `SukiSU-Ultra/SukiSU-Ultra` 的分支名，
-和你仓库的分支毫无关系。Run #1 证明 `main` 在 4.4 上编不过，Run #2 证明
-`old` 缺 4.4 兼容层。当前默认值是 `builtin`——它自带完整垫片，所需的
+所以 `builtin` / `old` / `main` 是 `SukiSU-Ultra/SukiSU-Ultra` 的分支名，  
+和你仓库的分支毫无关系。Run #1 证明 `main` 在 4.4 上编不过，Run #2 证明  
+`old` 缺 4.4 兼容层。当前默认值是 `builtin`——它自带完整垫片，所需的  
 4 处 hook 由 `build.sh` 在 CI 里自动插入，不用你碰 C 代码（见 5.5、5.6）。
 
-点下去之后，GitHub 生成一次 run，并把它**钉在点击那一刻的默认分支 HEAD 上**。
-Run #1 钉的是 `76863c4`；`b60a4d5` push 上去之后，新点的 run 会钉在
-`b60a4d5`。之后即使又 push 了新 commit，这次运行读的仍是那一版文件；
-要让新改动生效，得重新点一次 `Run workflow`。运行记录里的 `head_sha`
+点下去之后，GitHub 生成一次 run，并把它**钉在点击那一刻的默认分支 HEAD 上**。  
+Run #1 钉的是 `76863c4`；`b60a4d5` push 上去之后，新点的 run 会钉在  
+`b60a4d5`。之后即使又 push 了新 commit，这次运行读的仍是那一版文件；  
+要让新改动生效，得重新点一次 `Run workflow`。运行记录里的 `head_sha`  
 就是这个绑定。
 
-反过来，`workflow_dispatch` 只有写在默认分支才会出现按钮（2.2 讲过）。既然
-按钮能点，就说明 `.github/workflows/build.yml` 确实在 `main` 上；日志里
-`Run actions/checkout@v4` 成功，是文件被真正取到的第二个证据。点完不用再做
+反过来，`workflow_dispatch` 只有写在默认分支才会出现按钮（2.2 讲过）。既然  
+按钮能点，就说明 `.github/workflows/build.yml` 确实在 `main` 上；日志里  
+`Run actions/checkout@v4` 成功，是文件被真正取到的第二个证据。点完不用再做  
 任何操作，只剩等。
 
 ### 2.4 成功的样子
@@ -250,7 +251,11 @@ TWRP → `Install` → 选 zip → 滑动确认刷入。不要勾 `Reboot after 
 
 ### 4.3 验证
 
-设置 → 关于手机 → 内核版本，末尾应带 `-sukisu-dumpling`（脚本里 `localversion` 写的）。打开 Manager，显示已安装/工作中即成。
+设置 → 关于手机 → 内核版本。2026-11-10 之后构建的内核，本地版本号已改为
+`-perf+`、构建者改为 `root@7ce3fdbd9a43`，与 LineageOS 官方 dumpling 内核
+逐项一致（原因见 5.13：Play Integrity 的 DroidGuard 会读 `/proc/version`）。
+早期包（Run #8 及以前）末尾带的是 `-sukisu-dumpling`。两种都能用，
+区别只在于是否容易被检测方识别为自编内核。打开 Manager，显示已安装/工作中即成。
 
 ### 4.4 回滚
 
@@ -269,21 +274,25 @@ adb shell "dd if=/sdcard/boot-backup.img of=/dev/block/bootdevice/by-name/boot"
 
 第一次跑失败不丢人，也大概率不是你操作错。展开红色的那个步骤，把**最后 50 行**原样贴出来即可。
 
-**2026-11-08 第一次真实运行（Run #1）的结果**：`Prepare sources and self-check`
-成功，耗时 19 分钟，源码、工具链、三处内核树改动都到位；`Compile kernel` 跑了
+**2026-11-08 第一次真实运行（Run #1）的结果**：`Prepare sources and self-check`  
+成功，耗时 19 分钟，源码、工具链、三处内核树改动都到位；`Compile kernel` 跑了  
 3 分 58 秒后以 **exit code 2** 失败，`Pack` / `Upload` 两步被跳过。`build.sh`
-里脚本自己的失败都是 `exit 1`（`die()` 和 `[ -f ... ] || die`），`set -euo pipefail`
-会让 `make` 的退出码原样传出去，所以 2 是 **make 返回的**——编译阶段的 C
-代码报错，不是自检失败、不是下载失败、也不是按钮点错了。具体哪个文件、
-哪一行，只有日志正文能回答。
+
+|                                                  |   |                            |
+| ------------------------------------------------ | - | -------------------------- |
+| 里脚本自己的失败都是 `exit 1`（`die()` 和 \`[ -f ... ]       |   | die`），`set -euo pipefail\` |
+| 会让 `make` 的退出码原样传出去，所以 2 是 **make 返回的**——编译阶段的 C |   |                            |
+| 代码报错，不是自检失败、不是下载失败、也不是按钮点错了。具体哪个文件、              |   |                            |
+| 哪一行，只有日志正文能回答。                                   |   |                            |
 
 怎么把日志拿到手（四选一）：
 
 1. 运行页面点 `build` → 展开红色的 `Compile kernel` → 滚到底，复制最后 50 行
 2. 运行页面 Summary 区：`Keep compile log on failure` 会把最后 100 行写在这里
-3. 运行页面底部 `Artifacts` 区点 `compile-log-*-runN` 下载，解压出 `build.log`；
+3. 运行页面底部 `Artifacts` 区点 `compile-log-*-runN` 下载，解压出 `build.log`；  
    或右上角 `...` → `Download log archive`，找 `Compile kernel` 那个 txt
 4. 想让我读全文，把解压出的文件放到工程目录下、命名 `build.log`，告诉我路径
+
 
 **artifact 传上去之后，我仍然读不到内容，还得你转交一次。** 三层原因：
 
@@ -522,6 +531,7 @@ GitHub API 重新拉了一遍真实文件做插入测试）：
 | `fs/stat.c` `SYSCALL_DEFINE4(newfstatat)` | `error = vfs_fstatat(dfd, filename, &stat, flag);` | `ksu_handle_stat(&dfd, &filename, &flag)` |
 | `kernel/reboot.c` `SYSCALL_DEFINE4(reboot)` | `if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))` | `ksu_handle_sys_reboot(magic1, magic2, cmd, &arg)` |
 
+
 四个位置都在局部变量声明之后、第一条语句之前。4.4 是 C89 风格，
 把 `extern` 声明插进语句之后会直接编译失败——所以补丁先用函数签名定位，
 再检查从 `{` 到锚点之间只有声明/注释/空行，最后才插入；找不到锚点
@@ -687,11 +697,15 @@ job 结束时 GitHub 按**步骤顺序**把各步骤的文件拼成 Summary 页�
 
 prepare 成功也会生成 `prepare.log`，于是它那个空错误块和 100 行 tail
 反而排在编译错误前面。改成两趟后，第一趟跳过没有匹配的文件
+|  |  |  |
+| --- | --- | --- |
 （`[ -n "$errs" ] || continue`），只有含错误的日志会先写；两份都没匹配
 时补一行说明。这样无论挂在哪一步，最顶部一定是第一份含错误的日志。
 
 `grep` 的结果存进变量还有一个好处：一条都没匹配上时不会留下空代码块，
 看起来像"日志没抓到"。另外 `prepare.log` / `build.log` 必须先由前面两步
+|  |  |
+| --- | --- |
 `2>&1 | tee` 落盘，没有 `tee` 就无文件可 grep——Run #1/2 只能靠你手动
 复制日志就是这个原因。
 
@@ -822,6 +836,8 @@ extension/cpu_spoof.c:29:10: fatal error: 'vdso/datapage.h' file not found
 1. 扫描只保留一张硬编码前缀表（`linux/`、`asm/`、`crypto/` ...），
    `vdso/` 不在表里，这一行**根本没被检查**。
 2. 它把任何 `#if` 里的 include 一律当作"4.4 不展开"。可 29 行外面是
+|  |  |  |
+| --- | --- | --- |
    `#if defined(CONFIG_ARM64) || defined(__aarch64__)`——我们编译的就是
    arm64，这个条件为真，include 会被展开。
 
@@ -843,6 +859,7 @@ extension/cpu_spoof.c:29:10: fatal error: 'vdso/datapage.h' file not found
 `cs_cycle_last` / `raw_time_sec` / `xtime_clock_sec` 那一套，**没有**
 `clock_mode`；`include/linux/clocksource.h` 里 `vdso_clock_mode` 出现 0 次，
 也没有 `enum vdso_clock_mode`。
+
 
 更关键的一点：4.4 arm64 **确实导出** `vdso_data` 这个符号。如果伪造一份
 5.x 布局的 `struct vdso_data` 垫片，`find_kernel_symbol_exact("vdso_data")`
@@ -1022,10 +1039,10 @@ supercall）一行没动。
 | selfcheck 三态 | 未修补报 4 项 MISSING；全修补 `ok=1`；只还原一个文件 → 只报那一个 |
 
 `bash -n`、6 个内嵌 Python 块、全 LF、`git diff --check` 都过。
-门控后的 C 代码在 4.4 上能否编译、链接期符号齐不齐、能否开机，
-**仍然一次都没验证过**。
+门控后的 C 代码在 4.4 上能否编译、链接期符号齐不齐，由 5.11 的
+Run #8 回答；能否开机仍未验证。
 
-#### 下一轮
+#### 下一轮（已执行，结果见 5.11）
 
 ```powershell
 git add -A
@@ -1033,29 +1050,195 @@ git commit -m "fix: wire KPM/SUSFS switches into unity build, add kvcalloc shim"
 git push
 ```
 
-Actions → `Run workflow` → `Use workflow from` 选 `main`，分支 `builtin`。
-prepare 预期先出 `gated: extension/cpu_spoof.c`、4 行 header `gated:`、
-`preflight: 108 ...`，再出 4 行 feature `gated:` / `shimmed:`，然后进
-`Compile kernel`。缓存还在，prepare 约 20 秒。
+远端 HEAD 为 `10aafd0f`。Actions → `Run workflow` → `Use workflow from`
+选 `main`，分支 `builtin`。Run #8 的第三次尝试端到端通过。
+
+### 5.11 Run #8：第一次端到端成功，中间夹了一次 GitHub 故障
+
+先拆开两件叠在同一分钟、但完全无关的事。
+
+**平台故障。** Run #8 创建于 2026-11-09T18:17:38Z（北京 11-10 02:17），
+正好落在 GitHub 的 `Incident with Actions` 里：18:12:37Z 开始，
+impact=critical，`Actions` 组件 major_outage，`Webhooks` degraded；
+18:24:13Z 的公告写着 "elevated errors affecting GitHub Actions and the
+Checks API"。这两次 attempt 的 `jobs.total_count` 是 **0**，`run_attempt`
+涨到 2，网页报 `Internal server error` 加一个 Correlation ID。
+`workflow_dispatch` 被接受、run 记录建起来了，控制面没派 job 给 runner，
+`build.sh` 一行都没执行。所以那个 `failure` 是平台标记，不是编译判定，
+也没有 `prepare.log` / `build.log` / artifact 可查。Correlation ID 是
+GitHub 服务端请求号，只有 GitHub Support 能反查。
+
+**真正的成功。** 状态恢复为 `All Systems Operational` 后重跑，
+attempt 3 的结果（公开 REST API 可查）：
+
+| 项 | 值 |
+|---|---|
+| 运行 | `42672767295`，`head_sha=10aafd0f`，`conclusion=success` |
+| job | `build`，01:30:06Z → 01:41:27Z，约 11 分 21 秒 |
+| `Prepare sources and self-check` | success |
+| `Compile kernel` | success，01:32:39Z → 01:41:19Z，约 8 分 40 秒 |
+| `Pack AnyKernel3 zip` / `Upload flashable zip` | success |
+| 失败专用步骤 | Summary、日志上传都是 skipped |
+| artifact | `dumpling-sukisu-builtin-4.4.302`，16,108,440 字节 |
+
+前七轮累积的补丁到这里才第一次被真实工具链检验：4 处 hook、
+4 行 5.x-only 头门控、`cpu_spoof` 裁剪、KPM / SUSFS 开关、`kvcalloc`
+垫片全部通过。`compile_kernel()` 和 `pack_ak3()` 各有一次
+`[ -f out/arch/arm64/boot/Image.gz-dtb ]` 硬检查，所以 success 至少
+意味着 make 退出码为 0、内核镜像确实生成、AK3 zip 里装的是它。
+15.4 MiB 的尺寸也和 4.4 arm64 的 `Image.gz-dtb` 量级吻合。
+
+**当时没被验证的，比已验证的多。** 匿名 `actions/jobs/<id>/logs` 返回
+403 `Must have admin rights to Repository`，`artifacts/<id>/zip` 返回 401
+`Requires authentication`。API 拿不到编译日志正文，也拆不开 zip。后来你
+把内层 zip 下载到本机，5.12 才补上这层证据：
+
+- `CONFIG_KSU=y` 是否真让驱动进了 vmlinux —— **5.12 已证实进了**
+  （解压后的 Image 里有 322 处 `KernelSU`、215 处 `ksu_` 和一批
+  驱动 printk 字符串）。`selfcheck` 本身只查 defconfig / Kconfig /
+  Makefile 是否写对，不查链接结果。
+- 编译期 warning 的实际内容 —— 仍无证据（`-Werror` 已在 defconfig
+  关掉，绿不等于干净）。
+- 刷入后能否开机、SukiSU Manager 能否识别驱动、`su` 是否可用 —— 仍未验证。
+- KPM、SUSFS、`cpu_spoof` 被裁掉后 Manager 上的表现 —— 仍未验证，
+  属预期降级而非故障。
+
+#### 从出包到可用，还差这几步
+
+1. 运行页最下方 Artifacts 点 `dumpling-sukisu-builtin-4.4.302` 下载。
+   上传时设了 `compression-level: 0`，解开得到的是内层
+   `dumpling-SukiSU-**main**-4.4.302-<时间戳>.zip`（名字里的 main 是
+   命名 bug，内容仍是 builtin，见 5.12）。别把外层容器当已刷的包。
+2. 确认内层 zip 里有 `Image.gz-dtb` 且大小在 8 MiB 以上
+   （**5.12 已实测：16,010,427 字节**）。
+3. **先备份 boot**：TWRP → Backup → 勾 Boot；或已 root 时
+   `adb shell dd if=/dev/block/bootdevice/by-name/boot of=/sdcard/boot.img`。
+   这是唯一回滚路径。
+4. TWRP 里刷内层 zip。`anykernel.sh` 开了 `do.devicecheck=1`，
+   认 `cheeseburger` / `dumpling` / `OnePlus5` / `OnePlus5T`，
+   `BLOCK=/dev/block/bootdevice/by-name/boot`，`IS_SLOT_DEVICE=0`。
+|  |  |
+| --- | --- |
+5. 开机后 `adb shell dmesg | grep -i ksu` 看驱动有没有初始化；再装
+   SukiSU Manager 看状态。这两条都没过，就别算"成功"。
+6. 起不来就回 TWRP 恢复第 3 步的 boot 备份。
+
+### 5.12 把包拆开：驱动确实在里面，文件名却写错了
+
+你下载的内层包是
+`H:\shuaji-tools\dumpling-sukisu-builtin-4.4.302\dumpling-SukiSU-main-4.4.302-20261110-014119.zip`。
+先看名字：外层 artifact 叫 `...-builtin-...`，内层却叫 `...-main-...`。
+这不是两个不同的包，是同一个包被贴错了标签。
+
+#### 包结构
+
+| 项 | 实测 |
+|---|---|
+| 条目数 / 解压后总大小 | 24 项 / 21,373,978 字节 |
+| CRC | `testzip()` 全部通过 |
+| `Image.gz-dtb` | 16,010,427 字节 |
+| `anykernel.sh` | 1,502 字节，sha256 与仓库本地文件**逐字节一致** |
+| AK3 模板 | `update-binary` 19,724、`ak3-core.sh` 35,276、`magiskboot` 878,652、`busybox` 1,399,484 字节，齐 |
+| `modules/system/lib/modules/` | 空目录，与 `do.modules=0`（KSU 编进内核、无外挂模块）一致 |
+
+`anykernel.sh` 实际内容：`do.devicecheck=1`，设备名四个，
+`supported.versions=15`（对应 LineageOS 22.2 / Android 15），
+`BLOCK=/dev/block/bootdevice/by-name/boot`，`IS_SLOT_DEVICE=0`。
+
+#### 镜像本体
+
+`Image.gz-dtb` 以 `1f 8b 08` 开头。gzip 流占 12,608,620 字节，
+解出 37,576,736 字节的未压缩 `Image`；尾部 3,401,807 字节是 **8 个
+追加 DTB**，每个以 `d0 0d fe ed` 开头，第一个 `totalsize=0x000674a6`
+（423,078）正好等于下一个 magic 的偏移，拼接自洽。gzip 尾部的
+ISIZE 和 CRC32 与解压结果双双吻合，镜像没坏。
+
+```
+Linux version 4.4.302-sukisu-dumpling-perf (runner@runnervmlby3q)
+  (Android (13174946, +pgo, +bolt, +lto, +mlgo, based on r547379)
+   clang version 20.0.0 ...)
+```
+
+`localversion` 的 `-sukisu-dumpling` 生效，工具链是 `toolchain.conf`
+里锁的 `clang-r547379`，编译机是 GitHub runner。这颗内核确实出自
+我们这条流水线，不是上游原版。
+
+在解压后的 `Image` 里搜 ASCII：
+
+| 字符串 | 出现次数 |
+|---|---|
+| `KernelSU` | 322 |
+| `ksu_` | 215 |
+| `ksud` / `/data/adb` | 12 / 11 |
+| `allowlist` / `kernelsu` / `supercall` | 5 / 4 / 1 |
+
+抽到的运行期 printk 字符串包括
+`KernelSU: manager uid unchanged, skip search!`、
+`KernelSU: get_full_version: copy_to_user failed`、
+`KernelSU: invalid allowlist version: %d`、
+`KernelSU: feature: set_handler`、
+`load_allow_list open file failed: %ld`。
+这些是驱动代码里的字面量，只有 `drivers/kernelsu` 真被链接进
+vmlinux 才会出现在镜像里。**5.11 悬着的那条现在有答案了：
+`CONFIG_KSU=y` 生效了。** 编译期 warning、开机与 root 仍没有证据。
+
+#### 名字为什么是 main
+
+`toolchain.conf` 原来写 `SUKISU_REF="${SUKISU_REF:-main}"`。
+workflow 只在 `Prepare` 和 `Compile kernel` 两步注入
+`env.SUKISU_REF: ${{ inputs.sukisu_ref }}`，`Pack AnyKernel3 zip`
+没注入，于是 `build.sh pack` 落回默认值 `main`，把它写进了文件名。
+artifact 名走的是 `inputs.sukisu_ref`，所以显示 `builtin`。
+
+`pack_ak3()` 里 `SUKISU_REF` **只用于拼 zip 文件名**（第 939 行），
+镜像路径是固定的 `$KDIR/out/arch/arm64/boot/Image.gz-dtb`。因此
+镜像内容由 `Compile kernel` 那一步（env=builtin）决定，与命名无关。
+`main` 分支在 Run #1 就编不过，也不可能是这颗内核的来源。
+
+已修两处，都是纯命名/默认值，不动任何编译逻辑：
+
+- `.github/workflows/build.yml` 的 `Pack AnyKernel3 zip` 补上同样的 `env`。
+- `toolchain.conf` 默认 `main` → `builtin`，与 workflow 下拉框默认值
+  一致，也避免本地直接跑 `./build.sh all` 时拉到已被证伪的分支。
+
+本地实测三种展开：不带 env → `builtin`，`SUKISU_REF=main` → `main`
+（仍可覆盖），`SUKISU_REF=builtin` → `builtin`。**不需要为了改名
+重新编译**；下一次运行才会用上新名字，手上这个包内容是对的。
+
+#### 刷前检查清单（按实测收紧）
+
+1. 改掉本地这个文件的名字，别让 `main` 误导之后的操作：
+   ```powershell
+   Rename-Item "H:\shuaji-tools\dumpling-sukisu-builtin-4.4.302\dumpling-SukiSU-main-4.4.302-20261110-014119.zip" "dumpling-SukiSU-builtin-4.4.302-20261110-014119.zip"
+   ```
+2. **备份 boot**：TWRP → Backup → 勾 Boot。唯一回滚路径，别跳。
+3. 先确认设备名过关：`adb shell getprop ro.product.device`。
+   `do.devicecheck=1` 认 `cheeseburger` / `dumpling` / `OnePlus5` /
+   `OnePlus5T`；若 TWRP 报 device mismatch，先查 prop，别直接改脚本。
+4. TWRP 刷这个 zip（非 A/B，写 `/dev/block/bootdevice/by-name/boot`）。
+5. 开机后 `adb shell dmesg | grep -i ksu`，再装 SukiSU Manager 看状态。
+   KPM / SUSFS / cpu_spoof 被裁，Manager 上显示不支持属预期。
+6. 起不来就回 TWRP 恢复第 2 步的 boot 备份。
 
 ---
 
 ## 6. 边界，说清楚
 
-- 到 2026-11-10 跑过七轮，**端到端编译一次都没成功过**。Run #1 卡在
-  `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在 `TWA_RESUME`
-  与 `kernel_read/write` 签名（5.3）；Run #3 在 prepare 自检被拦下
-  （5.5），Run #4 在 hook 插入被拦下（5.6），这两次 `Compile kernel`
-  是 skipped。Run #5 起 `builtin` 的 C 代码开始进编译器，依次停在
-  `static_call.h`（5.8）、`vdso/datapage.h`（5.9）、KPM 与 SUSFS 的
-  五类 API/结构体错误（5.10）。前四轮连编译器都没见到，后三轮每次
-  往前走一段。
+- 到 2026-11-10 跑过八轮，**Run #8 第一次端到端成功**（5.11）。Run #1
+  卡在 `MODULE_IMPORT_NS` / `syscall_fn_t`（5.1），Run #2 卡在
+  `TWA_RESUME` 与 `kernel_read/write` 签名（5.3）；Run #3 在 prepare
+  自检被拦下（5.5），Run #4 在 hook 插入被拦下（5.6），这两次
+  `Compile kernel` 是 skipped。Run #5 起 `builtin` 的 C 代码开始进
+  编译器，依次停在 `static_call.h`（5.8）、`vdso/datapage.h`（5.9）、
+  KPM 与 SUSFS 的五类 API/结构体错误（5.10）。Run #8 的前两次 attempt
+  撞上 GitHub Actions 故障、0 个 job，第三次 attempt 才真正编完并出包。
+  前四轮连编译器都没见到，中间三轮每次往前走一段，第八轮走完。
 - 脚本在 Windows 主机上写。Bash 沙箱能连 GitHub（raw 主机偶发 TLS
   失败，API 可用），hook 锚点、签名、Kconfig 选项、4.4 头文件树都是抓
   真实上游文件核过的；本机有 MinGW GCC，可以做 `gcc -E` 预处理验证。
-  但**没有 Linux 内核工具链**。C 兼容垫片、四处 hook 调用、`builtin`
-  自带 compat 层在 4.4 上的表现，全都没在真实树上编译过。能抓源码、
-  能跑预处理器 ≠ 能编译内核。
+  **本机始终没有 Linux 内核工具链**，真正编译发生在 GitHub Actions 的
+  Ubuntu runner 上（5.11）。本机做过的静态验证和 runner 上的真实编译
+  是两回事，别混为一谈。
 - 本地验证过的部分：`bash -n` 语法、配置变量展开、Kconfig 插入只出一行、
   Makefile 匹配、defconfig 去重追加、兼容补丁单测、hook 插入**对四个
   真实 4.4 源文件**的实测、头文件门控与 cpu_spoof / KPM / SUSFS 裁剪
@@ -1067,12 +1250,17 @@ prepare 预期先出 `gated: extension/cpu_spoof.c`、4 行 header `gated:`、
   插入，4 行 5.x-only 头被门控，`cpu_spoof` 返回 `-EOPNOTSUPP`，KPM
   与 SUSFS 的开关真正接进 unity build，补上 `kvcalloc` 垫片。不用你改
   C 代码。`main` 已在 Run #1 证伪，`old` 已证伪"最老即最兼容"的假设。
-- **止损线（5.10 重估）**：预检查不了结构体字段和 API 签名。前几轮
-  需要从外部造垫片，Run #7 变成"把上游写好的开关接上"，而 unity build
-  已让所有代码过了一遍编译器，属收敛信号。新死线：Run #8 若再出现
-  **新的子系统**级不兼容（不是连带错误或一行垫片），就停手换老
-  KernelSU non-GKI 路线。老包只有出包证据、没有本机开机验证，换之前
-  要重新核实，不能当现成退路。
+- **止损线已解除（5.11）**：5.10 设的死线是"Run #8 若再出现新的
+  子系统级不兼容就换路线"。Run #8 没有再报编译错误，直接出包，
+  条件没触发。换老 KernelSU non-GKI 路线的备选理由随之消失；真要
+  重估，触发条件应该换成"刷入后开不了机或 Manager 认不到驱动"，
+  而不是再数编译报错。
+- **编译成功 ≠ 能用**：`Compile kernel` 的 success 只说明 make 退出
+  码为 0 且 `Image.gz-dtb` 生成了。匿名权限拿不到 job log（403）和
+  artifact 正文（401）；把内层包下载到本机拆开后（5.12）已证实
+  zip CRC、gzip ISIZE/CRC32、8 个 DTB，以及 KSU 字符串确实在
+  vmlinux 里。**仍没有证据**的是编译期 warning 内容、开机、
+  Manager 识别与 root 是否可用。5.11 / 5.12 的验证链走完再下结论。
 - 5.5 里关于 `ksu_handle_sys_reboot` 不存在的结论是错的，5.6 已纠正。
   官网引用的 `CONFIG_KSU_TAMPER_SYSCALL_TABLE` 等选项不属于这条分支，
   手工 hook 没有捷径。
@@ -1080,3 +1268,52 @@ prepare 预期先出 `gated: extension/cpu_spoof.c`、4 行 header `gated:`、
   32-bit su is needed"。我们没加。若 Manager 或 su 走 32 位路径才发现
   缺它，那时再补第五个 hook；现在不为了"可能用得上"预先改代码。
 - 刷机有变砖风险。备份 `boot.img` 是唯一的一步回滚，别跳过。
+
+### 5.13 Run #9：把 `sukisu` 从 banner 里拿掉（2026-11-10）
+
+刷入成功、root 可用之后，目标从"编出来能跑"换成"让 TikTok /
+Facebook 认不出这台机器，并过 Google Play Integrity"。第一个要修的
+不是某个模块，是内核自己举着的牌子。
+
+**证据。** 官方 `boot-20261020.img`（从 ROM zip 提取，`H:\shuaji-tools\`）
+解出来的 banner：
+
+```
+Linux version 4.4.302-perf+ (root@7ce3fdbd9a43)
+  (Android (12701618, +pgo, +bolt, +lto, +mlgo, based on r536225)
+   clang version 19.0.1 ...)
+```
+
+我们刷进去的（Run #8 产物，`/proc/version` 实测）：
+
+```
+Linux version 4.4.302-sukisu-dumpling-perf (runner@runnervmlby3q)
+  (Android (13174946, +pgo, +bolt, +lto, +mlgo, based on r547379)
+   clang version 20.0.0 ...)
+```
+
+DroidGuard（Play Integrity 的设备本地评估组件）读 `/proc/version` 的
+uname 串，社区已知它对内核 branding 有黑名单——命中 "Lineage" 及其
+变体直接硬失败，Java 层属性伪造碰不到它。`sukisu` 属于同一类信号；
+`runner@runnervmlby3q` 则是 GitHub Actions 构建机的特征。两者都在
+一行 `localversion` 和两个环境变量里。
+
+**改动**（`build.sh` 的 `compile_kernel()`，三行加注释）：
+
+- `localversion`：`-sukisu-dumpling` → `-perf+`
+- `export KBUILD_BUILD_USER=root`
+- `export KBUILD_BUILD_HOST=7ce3fdbd9a43`
+
+**刻意没动的**：clang r547379（20.0.1）与官方 r536225（19.0.1）的
+差异。换工具链要重下 LLVM、重验构建，而现有检测是黑名单加启发式，
+不是拿你的 banner 和某个 nightly 逐字节比对（每台设备的 nightly 都
+不同，全等不可行）。真正要消除的是"被改过"的信号，不是"和某一晚
+完全相同"。
+
+**边界**：banner 干净不等于能过。已解锁的 bootloader 是 BASIC 之上的
+DEVICE 级别硬伤，要靠 TrickyStore + 未吊销 keybox 才可能碰；
+TikTok / Facebook 用自己的检测，不调 Play Integrity。这套改动只
+拆掉其中最便宜的一颗雷。
+
+同时更新：`build.sh` 头部状态注释（root 已在真机验证）、4.3 节验证
+标准（内核版本末尾改为 `-perf+`，并注明早期包是 `-sukisu-dumpling`）。

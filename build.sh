@@ -10,7 +10,8 @@
 #   ./build.sh hooks       print the 4.4 manual-hook sites (preview / teaching)
 #   ./build.sh clean       remove work/ but keep out/
 #
-# Override the SukiSU branch (the workflow picks the default, not this script):
+# Override the SukiSU branch. The workflow passes its input via env;
+# toolchain.conf holds the fallback default (builtin, matching the workflow).
 #   SUKISU_REF=builtin ./build.sh all     full 4.4 compat layer; hooks inserted below
 #   SUKISU_REF=old     ./build.sh all     kprobes + generated 4.4 compat shims
 #   SUKISU_REF=main    ./build.sh all     proven broken on 4.4 (Run #1)
@@ -18,12 +19,14 @@
 # IMPORTANT / honest scope:
 #   Every URL, hash, defconfig name, build command and AK3 property in this
 #   script was read from upstream source files on 2026-11-08 (see toolchain.conf).
-#   The script itself was NOT compiled end-to-end: it was authored on a Windows
-#   host with no Linux kernel toolchain. `prepare` performs a real self-check;
-#   `build` is where 4.4-vs-modern-SukiSU compatibility is actually proven.
-#   The generated C shims and injected hook calls have never been compiled on a
-#   real 4.4 tree. A compile failure is NOT automatically a script bug: 4.4 is
-#   a legacy target and modern SukiSU may need backports we have not found yet.
+#   Authored on a Windows host with no Linux kernel toolchain; the real build
+#   runs on the GitHub Actions ubuntu-22.04 runner.
+#   As of Run #8 (2026-11-10) the full pipeline compiles and produces an
+#   AnyKernel3 zip; flashing it on a real dumpling was verified end to end:
+#   /proc/version shows the new banner, dmesg shows the KSU driver init,
+#   and `su -c id` returns uid=0 with context u:r:ksu:s0 (README 5.12).
+#   KPM, cpu_spoof and SUSFS are NOT in this build (4.4 has no support;
+#   see gate_optional_features).
 #
 # Safety before flashing:
 #   - Unlocked bootloader, TWRP for cheeseburger/dumpling installed.
@@ -914,8 +917,17 @@ compile_kernel() {
   export PATH="$WORK/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9-$ARM_GCC_HASH/bin:$PATH"
 
   cd "$KDIR"
+  # The uname string lands in /proc/version, and DroidGuard (Play Integrity's
+  # local evaluator) reads it against a blocklist of custom-kernel branding
+  # ("Lineage" and variants hard-fail it; "sukisu" is the same class of
+  # signal). A stock-looking banner costs nothing, so impersonate the
+  # official LineageOS dumpling build: localversion "-perf+", builder
+  # "root@7ce3fdbd9a43". Verified against the official boot.img on
+  # 2026-11-10 (README 5.13).
   touch localversion
-  printf -- '-sukisu-dumpling\n' > localversion
+  printf -- '-perf+\n' > localversion
+  export KBUILD_BUILD_USER=root
+  export KBUILD_BUILD_HOST=7ce3fdbd9a43
   make -j"$(nproc --all)" O=out "$DEFCONFIG" ARCH=arm64 SUBARCH=arm64 LLVM=1
   make -j"$(nproc --all)" O=out \
     ARCH=arm64 SUBARCH=arm64 \
